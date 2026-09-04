@@ -94,6 +94,7 @@ export default function Home() {
   const available = useMemo(() => players.filter((player) => !drafted.some((entry) => entry.playerId === player.id || entry.playerName?.toLowerCase() === player.name.toLowerCase())), [players, drafted]);
   const draftPicks = drafted.filter((entry) => entry.kind === 'draft');
   const keepers = drafted.filter((entry) => entry.kind === 'keeper');
+  const pricedKeepers = keepers.filter((entry) => entry.costRound).length;
   const recommendations = useMemo(() => rankAvailable(players, drafted, settings, teams), [players, drafted, settings, teams]);
   const best = recommendations[0];
   const currentPick = nextOpenDraftPick(draftPicks, keepers, teams);
@@ -160,12 +161,12 @@ export default function Home() {
         if (!Array.isArray(values.keepers)) throw new Error('keepers must be an array.');
         const additions = values.keepers.map((keeper, index) => {
           if (typeof keeper.playerName !== 'string' || typeof keeper.owner !== 'string') throw new Error(`Invalid keeper at index ${index}.`);
-          const player = players.find((candidate) => candidate.name.toLowerCase() === keeper.playerName!.toLowerCase());
-          if (!player) throw new Error(`${keeper.playerName} is not in the current player pool.`);
+          const playerName = keeper.playerName.trim();
+          const player = players.find((candidate) => candidate.name.toLowerCase() === playerName.toLowerCase());
           const originalRound = validRound(keeper.originalRound);
           const seasonsKept = validCount(keeper.seasonsKept) ?? (originalRound ? 1 : undefined);
           const costRound = validRound(keeper.costRound) ?? (originalRound ? Math.max(1, originalRound - (seasonsKept ?? 1)) : undefined);
-          return { playerId: player.id, playerName: player.name, owner: keeper.owner, pick: index + 1, kind: 'keeper' as const, originalRound, seasonsKept, costRound };
+          return { playerId: player?.id ?? `external-${playerName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-keeper-${index + 1}`, playerName: player?.name ?? playerName, owner: keeper.owner, pick: index + 1, kind: 'keeper' as const, originalRound, seasonsKept, costRound };
         });
         const resolved = resolveKeeperRoundCollisions(additions);
         setDrafted((entries) => [...entries.filter((entry) => entry.kind !== 'keeper'), ...resolved]);
@@ -190,6 +191,39 @@ export default function Home() {
       },
       annotations: { readOnlyHint: false, untrustedContentHint: true },
       execute: (input) => applyLeagueSnapshot(input as LeagueSnapshot, 'fantasypros-mcp'),
+    });
+    register({
+      name: 'apply_keeper_costs', title: 'Apply keeper round costs',
+      description: 'Enrich keepers already entered by team and player name with the finalized FantasyPros/ESPN draft-pick cost. Existing keeper names do not need to be re-entered.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          contracts: { type: 'array', minItems: 1, maxItems: 100, items: { type: 'object', properties: { playerName: { type: 'string' }, owner: { type: 'string' }, originalRound: { type: 'number' }, seasonsKept: { type: 'number' }, costRound: { type: 'number' } }, required: ['playerName'], additionalProperties: false } },
+        },
+        required: ['contracts'], additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, untrustedContentHint: true },
+      execute: (input) => {
+        const values = input as { contracts?: Array<{ playerName?: unknown; owner?: unknown; originalRound?: unknown; seasonsKept?: unknown; costRound?: unknown }> };
+        if (!Array.isArray(values.contracts)) throw new Error('contracts must be an array.');
+        const missing: string[] = [];
+        const next = keepers.map((keeper) => {
+          const contract = values.contracts!.find((candidate) => typeof candidate.playerName === 'string' && candidate.playerName.toLowerCase() === keeper.playerName?.toLowerCase() && (typeof candidate.owner !== 'string' || candidate.owner.toLowerCase() === keeper.owner.toLowerCase()));
+          if (!contract) return keeper;
+          const originalRound = validRound(contract.originalRound) ?? keeper.originalRound;
+          const seasonsKept = validCount(contract.seasonsKept) ?? keeper.seasonsKept ?? (originalRound ? 1 : undefined);
+          const costRound = validRound(contract.costRound) ?? (originalRound ? Math.max(1, originalRound - (seasonsKept ?? 1)) : keeper.costRound);
+          return { ...keeper, originalRound, seasonsKept, costRound };
+        });
+        values.contracts.forEach((contract) => {
+          if (typeof contract.playerName !== 'string' || !keepers.some((keeper) => keeper.playerName?.toLowerCase() === contract.playerName!.toLowerCase() && (typeof contract.owner !== 'string' || keeper.owner.toLowerCase() === contract.owner.toLowerCase()))) missing.push(String(contract.playerName ?? 'unnamed keeper'));
+        });
+        const resolved = resolveKeeperRoundCollisions(next);
+        setDrafted((entries) => [...entries.filter((entry) => entry.kind !== 'keeper'), ...resolved]);
+        const confirmed = resolved.filter((keeper) => keeper.costRound).length;
+        setNotice(`Keeper costs updated: ${confirmed}/${resolved.length} confirmed.${missing.length ? ` No matching keeper: ${missing.join(', ')}.` : ''}`);
+        return { updated: confirmed, totalKeepers: resolved.length, unmatched: missing, keepers: resolved.map((keeper) => ({ playerName: keeper.playerName, owner: keeper.owner, costRound: keeper.costRound })) };
+      },
     });
     return () => lifecycle.abort();
   }, [available, best, currentPick, currentOwner, draftPicks, espnLeagueName, isMyPick, keepers, leagueRosters, leagueSnapshotUpdatedAt, leagueSource, players, recommendations, settings, teams]);
@@ -216,13 +250,15 @@ export default function Home() {
       const seasonsKept = validCount(parts[3]) ?? (originalRound ? 1 : undefined);
       const costRound = originalRound ? Math.max(1, originalRound - (seasonsKept ?? 1)) : undefined;
       const player = players.find((candidate) => candidate.name.toLowerCase() === playerName.toLowerCase());
-      if (player) additions.push({ playerId: player.id, playerName: player.name, owner, pick: index + 1, kind: 'keeper', originalRound, seasonsKept, costRound }); else missing.push(playerName);
+      if (!player) missing.push(playerName);
+      additions.push({ playerId: player?.id ?? `external-${playerName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-keeper-${index + 1}`, playerName: player?.name ?? playerName, owner, pick: index + 1, kind: 'keeper', originalRound, seasonsKept, costRound });
     });
     try {
       const resolved = resolveKeeperRoundCollisions(additions);
       setDrafted((entries) => [...entries.filter((entry) => entry.kind !== 'keeper'), ...resolved]);
       const moved = resolved.filter((entry, index) => entry.costRound !== additions[index].costRound).length;
-      setNotice(missing.length ? `Added ${resolved.length}. Not found: ${missing.join(', ')}` : `Added ${resolved.length} keepers.${moved ? ` ${moved} duplicate round cost${moved === 1 ? ' was' : 's were'} moved one round earlier.` : ''}`);
+      const pending = resolved.filter((entry) => !entry.costRound).length;
+      setNotice(`Added ${resolved.length} keepers.${pending ? ` ${pending} round cost${pending === 1 ? ' is' : 's are'} pending.` : ''}${moved ? ` ${moved} duplicate round cost${moved === 1 ? ' was' : 's were'} moved one round earlier.` : ''}${missing.length ? ` ${missing.length} name${missing.length === 1 ? '' : 's'} will match automatically when the production player pool loads.` : ''}`);
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not calculate keeper costs.'); }
   }
 
@@ -466,10 +502,14 @@ export default function Home() {
             <Tabs defaultValue="keepers">
               <TabsList className="grid w-full grid-cols-4"><TabsTrigger value="keepers">Keepers</TabsTrigger><TabsTrigger value="picks">Picks</TabsTrigger><TabsTrigger value="setup">Setup</TabsTrigger><TabsTrigger value="data">Data</TabsTrigger></TabsList>
               <TabsContent value="keepers" className="pt-4">
-                <p className="mb-3 text-sm text-muted-foreground">One per line: <code>Team | Player | original round | years kept</code>. This year’s cost is calculated automatically. Example: round 5, kept 2 years = round 3.</p>
+                <div className="mb-3 rounded-lg border border-[#10271b]/15 bg-[#10271b]/5 p-3">
+                  <div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold">Draft-day resync planned</p><p className="mt-1 text-xs leading-relaxed text-muted-foreground">About 15 minutes before the draft, resync ESPN in FantasyPros. Then ask me to read its Keepers/Draft Picks page and sync Fourth Down.</p></div><Badge variant="outline">{keepers.length ? `${pricedKeepers}/${keepers.length} priced` : 'Waiting'}</Badge></div>
+                  <a className="mt-2 inline-flex items-center gap-1 text-xs font-semibold underline underline-offset-2" href="https://www.fantasypros.com/nfl/myleagues/settings/" target="_blank" rel="noreferrer">Open FantasyPros league setup <ExternalLink className="size-3" /></a>
+                </div>
+                <p className="mb-3 text-sm text-muted-foreground"><b>Fallback:</b> enter only <code>Team | Player</code>. Those keepers load immediately and stay marked “Cost pending.” If needed, add <code>| original round | years kept</code> later; this year’s cost is calculated automatically.</p>
                 <Textarea className="min-h-32 resize-y" value={keepersText} onChange={(event) => setKeepersText(event.target.value)} placeholder={'Super Smash Burrows | Nico Collins | 5 | 2\nTeam Name | Player Name | 9 | 1'} />
-                <Button className="mt-3 w-full" variant="secondary" onClick={importKeepers}>Load keeper contracts ({keepers.length}/36)</Button>
-                {keepers.some((keeper) => keeper.costRound) && <div className="mt-3 space-y-1 rounded-lg border bg-secondary/40 p-2.5">{keepers.map((keeper) => <div key={`${keeper.owner}-${keeper.playerId}`} className="flex items-center justify-between gap-3 text-xs"><span className="truncate"><b>{keeper.playerName ?? players.find((player) => player.id === keeper.playerId)?.name}</b> · {keeper.owner}</span><Badge variant="outline">Costs R{keeper.costRound ?? '—'}</Badge></div>)}</div>}
+                <Button className="mt-3 w-full" variant="secondary" onClick={importKeepers}>Load keepers ({keepers.length}/36)</Button>
+                {keepers.length > 0 && <div className="mt-3 space-y-1 rounded-lg border bg-secondary/40 p-2.5">{keepers.map((keeper) => <div key={`${keeper.owner}-${keeper.playerId}`} className="flex items-center justify-between gap-3 text-xs"><span className="truncate"><b>{keeper.playerName ?? players.find((player) => player.id === keeper.playerId)?.name}</b> · {keeper.owner}</span><Badge variant="outline">{keeper.costRound ? `Costs R${keeper.costRound}` : 'Cost pending'}</Badge></div>)}</div>}
                 <p className="mt-2 text-xs text-muted-foreground">Keeper-cost selections are automatically skipped on the live draft clock. If two keepers collide in one round, the later entry moves to the nearest earlier round.</p>
               </TabsContent>
               <TabsContent value="picks" className="pt-4"><p className="mb-3 text-sm text-muted-foreground">Paste new picks in draft order, one player per line. Teams are assigned by snake order. To override: <code>Team | Player</code>.</p><Textarea className="min-h-32 resize-y" value={bulkPicksText} onChange={(event) => setBulkPicksText(event.target.value)} placeholder={'Player selected at pick 1\nPlayer selected at pick 2\nPlayer selected at pick 3'} /><Button className="mt-3 w-full" variant="secondary" onClick={importDraftPicks} disabled={!bulkPicksText.trim()}>Add picks after #{draftPicks.length}</Button></TabsContent>
