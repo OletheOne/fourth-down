@@ -2,6 +2,7 @@ export type Position = 'QB' | 'RB' | 'WR' | 'TE' | 'K' | 'DST';
 
 export type Player = {
   id: string;
+  espnId?: string;
   name: string;
   pos: Position;
   team: string;

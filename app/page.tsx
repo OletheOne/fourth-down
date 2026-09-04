@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { ArrowRight, BrainCircuit, Check, ChevronRight, Download, RotateCcw, Search, Settings2, Upload } from 'lucide-react';
+import { ArrowRight, BrainCircuit, Check, ChevronRight, Download, Link2, RotateCcw, Search, Settings2, Upload } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -15,13 +15,18 @@ const defaultSettings: LeagueSettings = {
   userTeam: 'Team 6', draftSlot: 6, scoring: 'ppr', mode: 'balanced',
   starters: { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 2, K: 1, DST: 1 },
 };
-const teamNames = Array.from({ length: 12 }, (_, index) => `Team ${index + 1}`);
-type SavedState = { players: Player[]; drafted: DraftedPlayer[]; settings: LeagueSettings };
+const defaultTeams = Array.from({ length: 12 }, (_, index) => `Team ${index + 1}`);
+type SavedState = { players: Player[]; drafted: DraftedPlayer[]; settings: LeagueSettings; teams?: string[]; espnLeagueId?: string; espnSeason?: number };
 
 export default function Home() {
   const [players, setPlayers] = useState<Player[]>(demoPlayers);
   const [drafted, setDrafted] = useState<DraftedPlayer[]>([]);
   const [settings, setSettings] = useState<LeagueSettings>(defaultSettings);
+  const [teams, setTeams] = useState(defaultTeams);
+  const [espnLeagueId, setEspnLeagueId] = useState('');
+  const [espnSeason, setEspnSeason] = useState(new Date().getFullYear());
+  const [espnSyncing, setEspnSyncing] = useState(false);
+  const [espnLeagueName, setEspnLeagueName] = useState('');
   const [selectedPlayer, setSelectedPlayer] = useState('');
   const [selectedOwner, setSelectedOwner] = useState('Team 1');
   const [playerQuery, setPlayerQuery] = useState('');
@@ -36,13 +41,16 @@ export default function Home() {
       try {
         const saved = JSON.parse(raw) as SavedState;
         setPlayers(saved.players); setDrafted(saved.drafted); setSettings(saved.settings);
+        if (saved.teams?.length) setTeams(saved.teams);
+        if (saved.espnLeagueId) setEspnLeagueId(saved.espnLeagueId);
+        if (saved.espnSeason) setEspnSeason(saved.espnSeason);
       } catch {}
     }
     setHydrated(true);
   }, []);
   useEffect(() => {
-    if (hydrated) localStorage.setItem('fourth-down-state', JSON.stringify({ players, drafted, settings }));
-  }, [players, drafted, settings, hydrated]);
+    if (hydrated) localStorage.setItem('fourth-down-state', JSON.stringify({ players, drafted, settings, teams, espnLeagueId, espnSeason }));
+  }, [players, drafted, settings, teams, espnLeagueId, espnSeason, hydrated]);
 
   const available = useMemo(() => players.filter((player) => !drafted.some((entry) => entry.playerId === player.id)), [players, drafted]);
   const recommendations = useMemo(() => rankAvailable(players, drafted, settings), [players, drafted, settings]);
@@ -50,7 +58,7 @@ export default function Home() {
   const draftPicks = drafted.filter((entry) => entry.kind === 'draft');
   const keepers = drafted.filter((entry) => entry.kind === 'keeper');
   const currentPick = draftPicks.length + 1;
-  const currentOwner = ownerForPick(currentPick);
+  const currentOwner = ownerForPick(currentPick, teams);
   const isMyPick = currentOwner === settings.userTeam;
   const filteredPlayers = available.filter((player) => `${player.name} ${player.pos} ${player.team}`.toLowerCase().includes(playerQuery.toLowerCase())).slice(0, 8);
 
@@ -114,7 +122,7 @@ export default function Home() {
     if (!selectedPlayer) return;
     setDrafted((entries) => [...entries, { playerId: selectedPlayer, owner: selectedOwner, pick: currentPick, kind: 'draft' }]);
     setSelectedPlayer(''); setPlayerQuery('');
-    setSelectedOwner(ownerForPick(currentPick + 1));
+    setSelectedOwner(ownerForPick(currentPick + 1, teams));
     setNotice('Pick recorded. Rankings updated.');
   }
 
@@ -125,7 +133,7 @@ export default function Home() {
     rows.forEach((row, index) => {
       const parts = row.split('|').map((part) => part.trim());
       const playerName = parts.length > 1 ? parts.slice(1).join('|') : parts[0];
-      const owner = parts.length > 1 ? parts[0] : teamNames[Math.floor(index / 3)] ?? 'Team 12';
+      const owner = parts.length > 1 ? parts[0] : teams[Math.floor(index / 3)] ?? teams[teams.length - 1];
       const player = players.find((candidate) => candidate.name.toLowerCase() === playerName.toLowerCase());
       if (player) additions.push({ playerId: player.id, owner, pick: index + 1, kind: 'keeper' }); else missing.push(playerName);
     });
@@ -141,8 +149,56 @@ export default function Home() {
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not read that CSV.'); }
   }
 
+  async function syncEspn() {
+    if (!/^\d+$/.test(espnLeagueId.trim())) { setNotice('Enter the numeric ESPN League ID.'); return; }
+    setEspnSyncing(true); setNotice('Connecting to ESPN…');
+    try {
+      const response = await fetch(`/api/espn?leagueId=${encodeURIComponent(espnLeagueId.trim())}&season=${espnSeason}`, { cache: 'no-store' });
+      const data = await response.json() as {
+        error?: string;
+        league?: { name: string; scoring: LeagueSettings['scoring'] };
+        teams?: string[];
+        players?: Array<{ espnId: string; name: string; pos: Player['pos']; team: string; projectedPoints: number; adp: number; age: number }>;
+        picks?: Array<{ espnId: string; playerName: string; owner: string; pick: number; kind: 'keeper' | 'draft' }>;
+        warnings?: string[];
+      };
+      if (!response.ok || data.error) throw new Error(data.error ?? 'ESPN sync failed.');
+      const syncedTeams = data.teams?.length ? data.teams : teams;
+      const existingByName = new Map(players.map((player) => [player.name.toLowerCase(), player]));
+      const syncedPlayers: Player[] = (data.players ?? []).map((espnPlayer) => {
+        const existing = existingByName.get(espnPlayer.name.toLowerCase());
+        const usableAdp = espnPlayer.adp < 900 ? espnPlayer.adp : existing?.adp ?? 999;
+        return {
+          id: existing?.id ?? espnPlayer.name.toLowerCase().replace(/[^a-z0-9]+/g, '-'), espnId: espnPlayer.espnId,
+          name: espnPlayer.name, pos: espnPlayer.pos, team: espnPlayer.team,
+          projectedPoints: espnPlayer.projectedPoints || existing?.projectedPoints || 0,
+          adp: usableAdp, age: espnPlayer.age || existing?.age || 26,
+          dynastyRank: existing?.dynastyRank ?? Math.max(1, Math.round(usableAdp)),
+          tier: existing?.tier ?? Math.max(1, Math.ceil(usableAdp / 12)), bye: existing?.bye ?? 0,
+        };
+      });
+      const nextPlayers = syncedPlayers.length ? syncedPlayers : players;
+      const syncedDrafted = (data.picks ?? []).map((pick) => {
+        const player = nextPlayers.find((candidate) => candidate.espnId === pick.espnId || candidate.name.toLowerCase() === pick.playerName.toLowerCase());
+        return player ? { playerId: player.id, owner: pick.owner, pick: pick.pick, kind: pick.kind } satisfies DraftedPlayer : null;
+      }).filter(Boolean) as DraftedPlayer[];
+      const espnKeepers = syncedDrafted.filter((entry) => entry.kind === 'keeper');
+      const espnPicks = syncedDrafted.filter((entry) => entry.kind === 'draft');
+      setPlayers(nextPlayers); setTeams(syncedTeams); setEspnLeagueName(data.league?.name ?? 'ESPN League');
+      setSettings((current) => ({ ...current, scoring: data.league?.scoring ?? current.scoring, userTeam: syncedTeams.includes(current.userTeam) ? current.userTeam : syncedTeams[current.draftSlot - 1] ?? syncedTeams[0], }));
+      setSelectedOwner(syncedTeams[0] ?? 'Team 1');
+      setDrafted((current) => {
+        const currentKeepers = current.filter((entry) => entry.kind === 'keeper');
+        const currentPicks = current.filter((entry) => entry.kind === 'draft');
+        return [...(espnKeepers.length ? espnKeepers : currentKeepers), ...(espnPicks.length >= currentPicks.length ? espnPicks : currentPicks)];
+      });
+      setNotice(`${data.league?.name ?? 'ESPN league'} synced: ${syncedTeams.length} teams, ${espnKeepers.length} keepers, ${espnPicks.length} draft picks.${data.warnings?.length ? ` ${data.warnings.join(' ')}` : ''}`);
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not sync ESPN.'); }
+    finally { setEspnSyncing(false); }
+  }
+
   function exportState() {
-    const blob = new Blob([JSON.stringify({ players, drafted, settings }, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ players, drafted, settings, teams, espnLeagueId, espnSeason }, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a'); link.href = url; link.download = 'fourth-down-draft.json'; link.click();
     URL.revokeObjectURL(url);
@@ -157,7 +213,7 @@ export default function Home() {
             <div><p className="font-semibold leading-tight">Fourth Down</p><p className="text-xs text-white/55">Dynasty draft room</p></div>
           </div>
           <div className="hidden items-center gap-5 text-sm text-white/65 sm:flex">
-            <span><b className="text-white">12</b> teams</span><span><b className="text-white">3</b> keepers</span><span><b className="text-white">{available.length}</b> available</span>
+            <span><b className="text-white">{teams.length}</b> teams</span><span><b className="text-white">3</b> keepers</span><span><b className="text-white">{available.length}</b> available</span>
           </div>
           <Badge className={isMyPick ? 'bg-[#d7ff45] text-[#0a1510]' : 'bg-white/10 text-white'}>{isMyPick ? 'You’re on the clock' : `Pick ${currentPick}`}</Badge>
         </div>
@@ -198,7 +254,7 @@ export default function Home() {
             <div className="relative"><Search className="absolute left-3 top-3 size-4 text-muted-foreground" /><Input id="player-search" className="h-10 pl-9" value={playerQuery} onChange={(event) => { setPlayerQuery(event.target.value); setSelectedPlayer(''); }} placeholder="Search available players…" /></div>
             {playerQuery && <div className="mt-1 max-h-60 overflow-auto rounded-lg border bg-popover p-1 shadow-lg">{filteredPlayers.length ? filteredPlayers.map((player) => <button key={player.id} className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm hover:bg-secondary ${selectedPlayer === player.id ? 'bg-secondary' : ''}`} onClick={() => { setSelectedPlayer(player.id); setPlayerQuery(player.name); }}><span><b>{player.name}</b><span className="ml-2 text-muted-foreground">{player.pos} · {player.team}</span></span>{selectedPlayer === player.id && <Check className="size-4" />}</button>) : <p className="p-3 text-sm text-muted-foreground">No available player found.</p>}</div>}
             <div className="mt-4 grid grid-cols-[1fr_auto] gap-2">
-              <Select value={selectedOwner} onValueChange={(value) => setSelectedOwner(value as string)}><SelectTrigger className="h-10 w-full"><SelectValue /></SelectTrigger><SelectContent>{teamNames.map((team) => <SelectItem key={team} value={team}>{team}{team === settings.userTeam ? ' (you)' : ''}</SelectItem>)}</SelectContent></Select>
+              <Select value={selectedOwner} onValueChange={(value) => setSelectedOwner(value as string)}><SelectTrigger className="h-10 w-full"><SelectValue /></SelectTrigger><SelectContent>{teams.map((team) => <SelectItem key={team} value={team}>{team}{team === settings.userTeam ? ' (you)' : ''}</SelectItem>)}</SelectContent></Select>
               <Button className="h-10 px-4" disabled={!selectedPlayer} onClick={addDraftPick}>Add pick <ChevronRight /></Button>
             </div>
             {notice && <p aria-live="polite" className="mt-3 text-sm text-muted-foreground">{notice}</p>}
@@ -209,8 +265,17 @@ export default function Home() {
             <Tabs defaultValue="keepers">
               <TabsList className="grid w-full grid-cols-3"><TabsTrigger value="keepers">Keepers</TabsTrigger><TabsTrigger value="setup">Setup</TabsTrigger><TabsTrigger value="data">Data</TabsTrigger></TabsList>
               <TabsContent value="keepers" className="pt-4"><p className="mb-3 text-sm text-muted-foreground">One per line. Use <code>Team 4 | Player Name</code>, or paste 3 players per team in team order.</p><Textarea className="min-h-32 resize-y" value={keepersText} onChange={(event) => setKeepersText(event.target.value)} placeholder={'Team 1 | Player Name\nTeam 1 | Player Name\nTeam 1 | Player Name'} /><Button className="mt-3 w-full" variant="secondary" onClick={importKeepers}>Load keepers ({keepers.length}/36)</Button></TabsContent>
-              <TabsContent value="setup" className="space-y-4 pt-4"><Field label="My team"><Select value={settings.userTeam} onValueChange={(value) => setSettings({ ...settings, userTeam: value as string, draftSlot: Number((value as string).replace('Team ', '')) })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{teamNames.map((team) => <SelectItem key={team} value={team}>{team}</SelectItem>)}</SelectContent></Select></Field><Field label="Draft slot"><Select value={String(settings.draftSlot)} onValueChange={(value) => setSettings({ ...settings, draftSlot: Number(value), userTeam: `Team ${value}` })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{teamNames.map((_, index) => <SelectItem key={index + 1} value={String(index + 1)}>Slot {index + 1}</SelectItem>)}</SelectContent></Select></Field><Field label="Team direction"><Select value={settings.mode} onValueChange={(value) => setSettings({ ...settings, mode: value as LeagueSettings['mode'] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="contend">Contend now</SelectItem><SelectItem value="balanced">Balanced</SelectItem><SelectItem value="rebuild">Rebuild / youth</SelectItem></SelectContent></Select></Field><Field label="Scoring"><Select value={settings.scoring} onValueChange={(value) => setSettings({ ...settings, scoring: value as LeagueSettings['scoring'] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ppr">PPR</SelectItem><SelectItem value="half-ppr">Half PPR</SelectItem><SelectItem value="standard">Standard</SelectItem></SelectContent></Select></Field></TabsContent>
-              <TabsContent value="data" className="pt-4"><div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-300/60 bg-amber-50 p-3 text-xs text-amber-950"><Settings2 className="size-4 shrink-0" /> Demo values are illustrative. Import current projections before your real draft.</div><p className="mb-2 text-sm text-muted-foreground">CSV columns: name, pos, team, projectedPoints, adp, age, dynastyRank, tier, bye</p><Textarea className="min-h-32 resize-y font-mono text-xs" value={csvText} onChange={(event) => setCsvText(event.target.value)} placeholder="Paste CSV with a header row…" /><div className="mt-3 grid grid-cols-2 gap-2"><Button variant="secondary" onClick={importPlayers}><Upload /> Import CSV</Button><Button variant="outline" onClick={exportState}><Download /> Back up</Button></div></TabsContent>
+              <TabsContent value="setup" className="space-y-4 pt-4"><Field label="My team"><Select value={settings.userTeam} onValueChange={(value) => { const team = value as string; setSettings({ ...settings, userTeam: team, draftSlot: teams.indexOf(team) + 1 }); }}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{teams.map((team) => <SelectItem key={team} value={team}>{team}</SelectItem>)}</SelectContent></Select></Field><Field label="Draft slot"><Select value={String(settings.draftSlot)} onValueChange={(value) => setSettings({ ...settings, draftSlot: Number(value), userTeam: teams[Number(value) - 1] ?? settings.userTeam })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{teams.map((_, index) => <SelectItem key={index + 1} value={String(index + 1)}>Slot {index + 1}</SelectItem>)}</SelectContent></Select></Field><Field label="Team direction"><Select value={settings.mode} onValueChange={(value) => setSettings({ ...settings, mode: value as LeagueSettings['mode'] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="contend">Contend now</SelectItem><SelectItem value="balanced">Balanced</SelectItem><SelectItem value="rebuild">Rebuild / youth</SelectItem></SelectContent></Select></Field><Field label="Scoring"><Select value={settings.scoring} onValueChange={(value) => setSettings({ ...settings, scoring: value as LeagueSettings['scoring'] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ppr">PPR</SelectItem><SelectItem value="half-ppr">Half PPR</SelectItem><SelectItem value="standard">Standard</SelectItem></SelectContent></Select></Field></TabsContent>
+              <TabsContent value="data" className="pt-4">
+                <div className="mb-4 rounded-xl border border-[#10271b]/15 bg-[#10271b]/5 p-3">
+                  <div className="mb-2 flex items-center gap-2"><span className="grid size-7 place-items-center rounded-md bg-[#10271b] text-white"><Link2 className="size-4" /></span><div><p className="text-sm font-semibold">ESPN league sync</p>{espnLeagueName && <p className="text-xs text-muted-foreground">Connected to {espnLeagueName}</p>}</div></div>
+                  <div className="grid grid-cols-[1fr_92px] gap-2"><Input inputMode="numeric" value={espnLeagueId} onChange={(event) => setEspnLeagueId(event.target.value.replace(/\D/g, ''))} placeholder="League ID" aria-label="ESPN League ID" /><Input inputMode="numeric" value={espnSeason} onChange={(event) => setEspnSeason(Number(event.target.value))} aria-label="ESPN season" /></div>
+                  <Button className="mt-2 w-full" onClick={syncEspn} disabled={espnSyncing || !espnLeagueId}>{espnSyncing ? 'Syncing…' : 'Sync ESPN now'}</Button>
+                  <p className="mt-2 text-xs leading-relaxed text-muted-foreground">Works directly for leagues ESPN exposes. Private leagues stay on manual entry—never paste ESPN cookies here.</p>
+                </div>
+                <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-300/60 bg-amber-50 p-3 text-xs text-amber-950"><Settings2 className="size-4 shrink-0" /> ESPN supplies projections and ADP, but not consensus dynasty value. Import a current dynasty CSV for the sharpest recommendations.</div>
+                <p className="mb-2 text-sm text-muted-foreground">CSV columns: name, pos, team, projectedPoints, adp, age, dynastyRank, tier, bye</p><Textarea className="min-h-28 resize-y font-mono text-xs" value={csvText} onChange={(event) => setCsvText(event.target.value)} placeholder="Paste CSV with a header row…" /><div className="mt-3 grid grid-cols-2 gap-2"><Button variant="secondary" onClick={importPlayers}><Upload /> Import CSV</Button><Button variant="outline" onClick={exportState}><Download /> Back up</Button></div>
+              </TabsContent>
             </Tabs>
           </div>
         </aside>
@@ -229,9 +294,10 @@ function PositionBadge({ pos }: { pos: string }) {
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return <label className="block text-sm"><span className="mb-1.5 block font-medium">{label}</span>{children}</label>;
 }
-function ownerForPick(pick: number) {
-  const round = Math.floor((pick - 1) / 12) + 1;
-  const pickInRound = ((pick - 1) % 12) + 1;
-  const ownerSlot = round % 2 === 1 ? pickInRound : 13 - pickInRound;
-  return `Team ${ownerSlot}`;
+function ownerForPick(pick: number, teams: string[]) {
+  const teamCount = teams.length || 12;
+  const round = Math.floor((pick - 1) / teamCount) + 1;
+  const pickInRound = ((pick - 1) % teamCount) + 1;
+  const ownerSlot = round % 2 === 1 ? pickInRound : teamCount - pickInRound + 1;
+  return teams[ownerSlot - 1] ?? `Team ${ownerSlot}`;
 }
