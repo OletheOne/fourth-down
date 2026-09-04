@@ -128,6 +128,16 @@ export async function GET(request: Request) {
   ));
 
   const warnings = endpointResults.slice(1).flatMap((result, index) => result.status === 'rejected' ? [`${['Projections', 'Redraft rankings', 'Dynasty rankings', 'ADP', 'Injuries'][index]} could not be refreshed.`] : []);
+  const missingCoreRankings = redraftResult.status === 'rejected' || dynastyResult.status === 'rejected';
+  if (players.length < 100 || missingCoreRankings) {
+    return Response.json({
+      configured: true,
+      code: 'sample_access',
+      error: `This FantasyPros key returned ${players.length} sample players instead of the production draft pool. Activate API access through a paid FantasyPros HOF membership, then refresh again.`,
+      receivedPlayers: players.length,
+      warnings,
+    }, { status: 403, headers: { 'Cache-Control': 'no-store' } });
+  }
   return Response.json({
     configured: true,
     source: 'FantasyPros',

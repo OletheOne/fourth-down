@@ -191,8 +191,15 @@ export default function Home() {
     const scoring = settings.scoring === 'half-ppr' ? 'HALF' : settings.scoring === 'ppr' ? 'PPR' : 'STD';
     try {
       const response = await fetch(`/api/fantasypros?season=${espnSeason}&scoring=${scoring}`, { cache: 'no-store' });
-      const data = await response.json() as { error?: string; players?: Player[]; updatedAt?: string; warnings?: string[] };
-      if (!response.ok || data.error) throw new Error(data.error ?? 'FantasyPros refresh failed.');
+      const data = await response.json() as { code?: string; error?: string; players?: Player[]; updatedAt?: string; warnings?: string[] };
+      if (!response.ok || data.error) {
+        if (data.code === 'sample_access') {
+          if (players.length < 100) { setPlayers(demoPlayers); setDataSource('demo'); setLastFantasyProsSync(''); }
+          setNotice(data.error ?? 'This key only has FantasyPros sample access.');
+          return;
+        }
+        throw new Error(data.error ?? 'FantasyPros refresh failed.');
+      }
       if (!data.players?.length) throw new Error('FantasyPros returned no draftable players.');
 
       const oldPlayers = new Map(players.map((player) => [player.id, player]));
@@ -342,6 +349,7 @@ export default function Home() {
                   <Button className="w-full bg-[#d7ff45] text-[#10271b] hover:bg-[#c8ef3e]" onClick={() => void syncFantasyPros()} disabled={fantasyProsSyncing}>
                     <RefreshCw className={fantasyProsSyncing ? 'animate-spin' : ''} /> {fantasyProsSyncing ? 'Refreshing…' : dataSource === 'fantasypros' ? 'Refresh FantasyPros' : 'Load FantasyPros data'}
                   </Button>
+                  {dataSource !== 'fantasypros' && <p className="mt-2 rounded-md bg-amber-300/10 px-2 py-1.5 text-xs text-amber-100">Free keys return sample data. The full draft pool requires <a className="font-semibold underline underline-offset-2" href="https://www.fantasypros.com/premium/" target="_blank" rel="noreferrer">FantasyPros HOF production access</a>.</p>}
                   <p className="mt-2 text-center text-xs text-white/45">Data provided by <a className="underline underline-offset-2 hover:text-white" href="https://www.fantasypros.com/api-data/" target="_blank" rel="noreferrer">FantasyPros</a> · personal use only</p>
                 </div>
                 <div className="mb-4 rounded-xl border border-[#10271b]/15 bg-[#10271b]/5 p-3">
