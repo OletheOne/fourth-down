@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { ArrowRight, BrainCircuit, Check, ChevronRight, Download, Link2, RotateCcw, Search, Settings2, Upload } from 'lucide-react';
+import { ArrowRight, BrainCircuit, Check, ChevronRight, Database, Download, Link2, RefreshCw, RotateCcw, Search, Upload } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -16,7 +16,8 @@ const defaultSettings: LeagueSettings = {
   starters: { QB: 1, RB: 2, WR: 2, TE: 1, FLEX: 2, K: 1, DST: 1 },
 };
 const defaultTeams = Array.from({ length: 12 }, (_, index) => `Team ${index + 1}`);
-type SavedState = { players: Player[]; drafted: DraftedPlayer[]; settings: LeagueSettings; teams?: string[]; espnLeagueId?: string; espnSeason?: number };
+type DataSource = 'demo' | 'fantasypros' | 'espn' | 'csv';
+type SavedState = { players: Player[]; drafted: DraftedPlayer[]; settings: LeagueSettings; teams?: string[]; espnLeagueId?: string; espnSeason?: number; dataSource?: DataSource; lastFantasyProsSync?: string };
 
 export default function Home() {
   const [players, setPlayers] = useState<Player[]>(demoPlayers);
@@ -27,6 +28,9 @@ export default function Home() {
   const [espnSeason, setEspnSeason] = useState(new Date().getFullYear());
   const [espnSyncing, setEspnSyncing] = useState(false);
   const [espnLeagueName, setEspnLeagueName] = useState('');
+  const [dataSource, setDataSource] = useState<DataSource>('demo');
+  const [lastFantasyProsSync, setLastFantasyProsSync] = useState('');
+  const [fantasyProsSyncing, setFantasyProsSyncing] = useState(false);
   const [selectedPlayer, setSelectedPlayer] = useState('');
   const [selectedOwner, setSelectedOwner] = useState('Team 1');
   const [playerQuery, setPlayerQuery] = useState('');
@@ -45,13 +49,22 @@ export default function Home() {
         if (saved.teams?.length) setTeams(saved.teams);
         if (saved.espnLeagueId) setEspnLeagueId(saved.espnLeagueId);
         if (saved.espnSeason) setEspnSeason(saved.espnSeason);
+        if (saved.dataSource) setDataSource(saved.dataSource);
+        if (saved.lastFantasyProsSync) setLastFantasyProsSync(saved.lastFantasyProsSync);
       } catch {}
     }
     setHydrated(true);
   }, []);
   useEffect(() => {
-    if (hydrated) localStorage.setItem('fourth-down-state', JSON.stringify({ players, drafted, settings, teams, espnLeagueId, espnSeason }));
-  }, [players, drafted, settings, teams, espnLeagueId, espnSeason, hydrated]);
+    if (hydrated) localStorage.setItem('fourth-down-state', JSON.stringify({ players, drafted, settings, teams, espnLeagueId, espnSeason, dataSource, lastFantasyProsSync }));
+  }, [players, drafted, settings, teams, espnLeagueId, espnSeason, dataSource, lastFantasyProsSync, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated || dataSource !== 'fantasypros' || !lastFantasyProsSync) return;
+    if (Date.now() - new Date(lastFantasyProsSync).getTime() > 6 * 60 * 60 * 1000) void syncFantasyPros(true);
+    // The refresh is intentionally evaluated only when saved state finishes loading.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hydrated]);
 
   const available = useMemo(() => players.filter((player) => !drafted.some((entry) => entry.playerId === player.id)), [players, drafted]);
   const recommendations = useMemo(() => rankAvailable(players, drafted, settings), [players, drafted, settings]);
@@ -61,6 +74,7 @@ export default function Home() {
   const currentPick = draftPicks.length + 1;
   const currentOwner = ownerForPick(currentPick, teams);
   const isMyPick = currentOwner === settings.userTeam;
+  const sourceLabel = dataSource === 'fantasypros' ? 'FantasyPros live' : dataSource === 'espn' ? 'ESPN data' : dataSource === 'csv' ? 'Custom CSV' : 'Demo data';
   const filteredPlayers = available.filter((player) => `${player.name} ${player.pos} ${player.team}`.toLowerCase().includes(playerQuery.toLowerCase())).slice(0, 8);
 
   useEffect(() => {
@@ -166,9 +180,37 @@ export default function Home() {
   function importPlayers() {
     try {
       const imported = parsePlayerCsv(csvText);
-      setPlayers(imported); setDrafted([]);
+      setPlayers(imported); setDrafted([]); setDataSource('csv');
       setNotice(`Loaded ${imported.length} players. Previous keepers and picks were cleared.`);
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not read that CSV.'); }
+  }
+
+  async function syncFantasyPros(silent = false) {
+    setFantasyProsSyncing(true);
+    if (!silent) setNotice('Refreshing FantasyPros rankings, projections, ADP, and injuries…');
+    const scoring = settings.scoring === 'half-ppr' ? 'HALF' : settings.scoring === 'ppr' ? 'PPR' : 'STD';
+    try {
+      const response = await fetch(`/api/fantasypros?season=${espnSeason}&scoring=${scoring}`, { cache: 'no-store' });
+      const data = await response.json() as { error?: string; players?: Player[]; updatedAt?: string; warnings?: string[] };
+      if (!response.ok || data.error) throw new Error(data.error ?? 'FantasyPros refresh failed.');
+      if (!data.players?.length) throw new Error('FantasyPros returned no draftable players.');
+
+      const oldPlayers = new Map(players.map((player) => [player.id, player]));
+      const nextByName = new Map(data.players.map((player) => [player.name.toLowerCase(), player]));
+      setDrafted((entries) => entries.map((entry) => {
+        const previousPlayer = oldPlayers.get(entry.playerId);
+        const replacement = previousPlayer ? nextByName.get(previousPlayer.name.toLowerCase()) : undefined;
+        return replacement ? { ...entry, playerId: replacement.id } : entry;
+      }));
+      setPlayers(data.players);
+      setDataSource('fantasypros');
+      setLastFantasyProsSync(data.updatedAt ?? new Date().toISOString());
+      setNotice(`FantasyPros loaded ${data.players.length} players.${data.warnings?.length ? ` ${data.warnings.join(' ')}` : ''}`);
+    } catch (error) {
+      if (!silent) setNotice(error instanceof Error ? error.message : 'Could not refresh FantasyPros.');
+    } finally {
+      setFantasyProsSyncing(false);
+    }
   }
 
   async function syncEspn() {
@@ -207,6 +249,7 @@ export default function Home() {
       const espnKeepers = syncedDrafted.filter((entry) => entry.kind === 'keeper');
       const espnPicks = syncedDrafted.filter((entry) => entry.kind === 'draft');
       setPlayers(nextPlayers); setTeams(syncedTeams); setEspnLeagueName(data.league?.name ?? 'ESPN League');
+      if (dataSource !== 'fantasypros') setDataSource('espn');
       setSettings((current) => ({ ...current, scoring: data.league?.scoring ?? current.scoring, userTeam: syncedTeams.includes(current.userTeam) ? current.userTeam : syncedTeams[current.draftSlot - 1] ?? syncedTeams[0], }));
       setSelectedOwner(syncedTeams[0] ?? 'Team 1');
       setDrafted((current) => {
@@ -220,7 +263,7 @@ export default function Home() {
   }
 
   function exportState() {
-    const blob = new Blob([JSON.stringify({ players, drafted, settings, teams, espnLeagueId, espnSeason }, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ players, drafted, settings, teams, espnLeagueId, espnSeason, dataSource, lastFantasyProsSync }, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a'); link.href = url; link.download = 'fourth-down-draft.json'; link.click();
     URL.revokeObjectURL(url);
@@ -235,7 +278,7 @@ export default function Home() {
             <div><p className="font-semibold leading-tight">Fourth Down</p><p className="text-xs text-white/55">Dynasty draft room</p></div>
           </div>
           <div className="hidden items-center gap-5 text-sm text-white/65 sm:flex">
-            <span><b className="text-white">{teams.length}</b> teams</span><span><b className="text-white">3</b> keepers</span><span><b className="text-white">{available.length}</b> available</span>
+            <span><b className="text-white">{teams.length}</b> teams</span><span><b className="text-white">3</b> keepers</span><span><b className="text-white">{available.length}</b> available</span><span className={dataSource === 'demo' ? 'text-amber-300' : 'text-[#d7ff45]'}>{sourceLabel}</span>
           </div>
           <Badge className={isMyPick ? 'bg-[#d7ff45] text-[#0a1510]' : 'bg-white/10 text-white'}>{isMyPick ? 'You’re on the clock' : `Pick ${currentPick}`}</Badge>
         </div>
@@ -290,14 +333,24 @@ export default function Home() {
               <TabsContent value="picks" className="pt-4"><p className="mb-3 text-sm text-muted-foreground">Paste new picks in draft order, one player per line. Teams are assigned by snake order. To override: <code>Team | Player</code>.</p><Textarea className="min-h-32 resize-y" value={bulkPicksText} onChange={(event) => setBulkPicksText(event.target.value)} placeholder={'Player selected at pick 1\nPlayer selected at pick 2\nPlayer selected at pick 3'} /><Button className="mt-3 w-full" variant="secondary" onClick={importDraftPicks} disabled={!bulkPicksText.trim()}>Add picks after #{draftPicks.length}</Button></TabsContent>
               <TabsContent value="setup" className="space-y-4 pt-4"><Field label="My team"><Select value={settings.userTeam} onValueChange={(value) => { const team = value as string; setSettings({ ...settings, userTeam: team, draftSlot: teams.indexOf(team) + 1 }); }}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{teams.map((team) => <SelectItem key={team} value={team}>{team}</SelectItem>)}</SelectContent></Select></Field><Field label="Draft slot"><Select value={String(settings.draftSlot)} onValueChange={(value) => setSettings({ ...settings, draftSlot: Number(value), userTeam: teams[Number(value) - 1] ?? settings.userTeam })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{teams.map((_, index) => <SelectItem key={index + 1} value={String(index + 1)}>Slot {index + 1}</SelectItem>)}</SelectContent></Select></Field><Field label="Team direction"><Select value={settings.mode} onValueChange={(value) => setSettings({ ...settings, mode: value as LeagueSettings['mode'] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="contend">Contend now</SelectItem><SelectItem value="balanced">Balanced</SelectItem><SelectItem value="rebuild">Rebuild / youth</SelectItem></SelectContent></Select></Field><Field label="Scoring"><Select value={settings.scoring} onValueChange={(value) => setSettings({ ...settings, scoring: value as LeagueSettings['scoring'] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ppr">PPR</SelectItem><SelectItem value="half-ppr">Half PPR</SelectItem><SelectItem value="standard">Standard</SelectItem></SelectContent></Select></Field></TabsContent>
               <TabsContent value="data" className="pt-4">
+                <div className="mb-4 rounded-xl border border-[#d7ff45]/50 bg-[#10271b] p-3 text-white">
+                  <div className="mb-3 flex items-start justify-between gap-3">
+                    <div className="flex items-center gap-2"><span className="grid size-7 place-items-center rounded-md bg-[#d7ff45] text-[#10271b]"><Database className="size-4" /></span><div><p className="text-sm font-semibold">FantasyPros intelligence</p><p className="text-xs text-white/55">{dataSource === 'fantasypros' && lastFantasyProsSync ? `Updated ${new Date(lastFantasyProsSync).toLocaleString()}` : 'Production player data source'}</p></div></div>
+                    <Badge className={dataSource === 'fantasypros' ? 'bg-[#d7ff45] text-[#10271b]' : 'bg-white/10 text-white'}>{dataSource === 'fantasypros' ? 'Live' : 'Not loaded'}</Badge>
+                  </div>
+                  <p className="mb-3 text-xs leading-relaxed text-white/65">Loads the complete player pool, projections, redraft and dynasty consensus, ADP, tiers, injuries, and news signals. Saved locally so your board remains available during the draft.</p>
+                  <Button className="w-full bg-[#d7ff45] text-[#10271b] hover:bg-[#c8ef3e]" onClick={() => void syncFantasyPros()} disabled={fantasyProsSyncing}>
+                    <RefreshCw className={fantasyProsSyncing ? 'animate-spin' : ''} /> {fantasyProsSyncing ? 'Refreshing…' : dataSource === 'fantasypros' ? 'Refresh FantasyPros' : 'Load FantasyPros data'}
+                  </Button>
+                  <p className="mt-2 text-center text-xs text-white/45">Data provided by <a className="underline underline-offset-2 hover:text-white" href="https://www.fantasypros.com/api-data/" target="_blank" rel="noreferrer">FantasyPros</a> · personal use only</p>
+                </div>
                 <div className="mb-4 rounded-xl border border-[#10271b]/15 bg-[#10271b]/5 p-3">
                   <div className="mb-2 flex items-center gap-2"><span className="grid size-7 place-items-center rounded-md bg-[#10271b] text-white"><Link2 className="size-4" /></span><div><p className="text-sm font-semibold">ESPN league sync</p>{espnLeagueName && <p className="text-xs text-muted-foreground">Connected to {espnLeagueName}</p>}</div></div>
                   <div className="grid grid-cols-[1fr_92px] gap-2"><Input inputMode="numeric" value={espnLeagueId} onChange={(event) => setEspnLeagueId(event.target.value.replace(/\D/g, ''))} placeholder="League ID" aria-label="ESPN League ID" /><Input inputMode="numeric" value={espnSeason} onChange={(event) => setEspnSeason(Number(event.target.value))} aria-label="ESPN season" /></div>
                   <Button className="mt-2 w-full" onClick={syncEspn} disabled={espnSyncing || !espnLeagueId}>{espnSyncing ? 'Syncing…' : 'Sync ESPN now'}</Button>
                   <p className="mt-2 text-xs leading-relaxed text-muted-foreground">Works directly for leagues ESPN exposes. Private leagues stay on manual entry—never paste ESPN cookies here.</p>
                 </div>
-                <div className="mb-3 flex items-center gap-2 rounded-lg border border-amber-300/60 bg-amber-50 p-3 text-xs text-amber-950"><Settings2 className="size-4 shrink-0" /> ESPN supplies projections and ADP, but not consensus dynasty value. Import a current dynasty CSV for the sharpest recommendations.</div>
-                <p className="mb-2 text-sm text-muted-foreground">CSV columns: name, pos, team, projectedPoints, adp, age, dynastyRank, tier, bye</p><Textarea className="min-h-28 resize-y font-mono text-xs" value={csvText} onChange={(event) => setCsvText(event.target.value)} placeholder="Paste CSV with a header row…" /><div className="mt-3 grid grid-cols-2 gap-2"><Button variant="secondary" onClick={importPlayers}><Upload /> Import CSV</Button><Button variant="outline" onClick={exportState}><Download /> Back up</Button></div>
+                <p className="mb-2 text-sm font-medium">Backup and custom data</p><p className="mb-2 text-xs text-muted-foreground">CSV is optional. Columns: name, pos, team, projectedPoints, adp, age, dynastyRank, tier, bye</p><Textarea className="min-h-24 resize-y font-mono text-xs" value={csvText} onChange={(event) => setCsvText(event.target.value)} placeholder="Optional: paste a custom CSV…" /><div className="mt-3 grid grid-cols-2 gap-2"><Button variant="secondary" onClick={importPlayers} disabled={!csvText.trim()}><Upload /> Import CSV</Button><Button variant="outline" onClick={exportState}><Download /> Back up</Button></div>
               </TabsContent>
             </Tabs>
           </div>

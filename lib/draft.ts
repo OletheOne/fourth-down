@@ -10,8 +10,10 @@ export type Player = {
   adp: number;
   age: number;
   dynastyRank: number;
+  consensusRank?: number;
   tier: number;
   bye: number;
+  injuryStatus?: string;
 };
 
 export type DraftedPlayer = {
@@ -100,7 +102,12 @@ export function rankAvailable(players: Player[], drafted: DraftedPlayer[], setti
   return available.map((player) => {
     const receptionBoost = settings.scoring === 'ppr' ? (player.pos === 'TE' ? 10 : player.pos === 'WR' ? 7 : player.pos === 'RB' ? 3 : 0)
       : settings.scoring === 'half-ppr' ? (player.pos === 'TE' ? 5 : player.pos === 'WR' ? 3.5 : player.pos === 'RB' ? 1.5 : 0) : 0;
-    const winNow = clamp(((player.projectedPoints - minProjection) / (maxProjection - minProjection || 1)) * 100 + receptionBoost);
+    const projectionScore = clamp(((player.projectedPoints - minProjection) / (maxProjection - minProjection || 1)) * 100);
+    const consensusScore = player.consensusRank && player.consensusRank < 900 ? clamp(104 - player.consensusRank * 1.25) : projectionScore;
+    const injury = player.injuryStatus?.toLowerCase() ?? '';
+    const injuryPenalty = injury.includes('out') || injury.includes('reserve') || injury === 'ir' ? 42
+      : injury.includes('doubtful') ? 24 : injury.includes('questionable') ? 9 : 0;
+    const winNow = clamp(projectionScore * 0.68 + consensusScore * 0.32 + receptionBoost - injuryPenalty);
     const dynasty = clamp(104 - player.dynastyRank * 1.65 - Math.max(0, player.age - 27) * 2.5);
     const samePosition = available.filter((candidate) => candidate.pos === player.pos && candidate.id !== player.id);
     const nextAtPosition = samePosition.sort((a, b) => b.projectedPoints - a.projectedPoints)[0];
@@ -116,10 +123,12 @@ export function rankAvailable(players: Player[], drafted: DraftedPlayer[], setti
     return {
       ...player, score, components: { winNow, dynasty, scarcity, rosterFit, urgency },
       rationale: [
-        `${Math.round(winNow)}th-percentile immediate projection in this pool`,
+        `${Math.round(winNow)} immediate-value signal from projections${player.consensusRank && player.consensusRank < 900 ? ` and redraft ECR ${player.consensusRank}` : ''}`,
+        player.dynastyRank < 900 ? `dynasty consensus rank ${player.dynastyRank}` : 'limited dynasty consensus coverage',
         `${player.pos}${player.tier === 1 ? ' elite-tier scarcity' : ` tier ${player.tier}`} with a ${Math.max(0, drop).toFixed(1)}-point drop to the next option`,
         filled < starterNeed ? `fills an open ${player.pos} starter need` : `adds depth after ${Math.round(filled)} rostered ${player.pos}${filled === 1 ? '' : 's'}`,
         urgency > 62 ? 'unlikely to survive to your next turn' : urgency < 35 ? 'has a reasonable chance to reach your next turn' : 'availability at your next turn is uncertain',
+        ...(injuryPenalty ? [`current ${player.injuryStatus} designation is reducing the recommendation`] : []),
       ],
     };
   }).sort((a, b) => b.score - a.score);
