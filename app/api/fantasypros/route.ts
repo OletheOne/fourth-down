@@ -82,9 +82,10 @@ export async function GET(request: Request) {
     fantasyProsFetch(`/nfl/${season}/consensus-rankings?position=ALL&type=DK&${query}`, apiKey),
     fantasyProsFetch(`/nfl/${season}/consensus-rankings?position=ALL&type=ADP&${query}`, apiKey),
     fantasyProsFetch(`/nfl/injuries?season=${season}`, apiKey),
+    fantasyProsFetch('/nfl/news?limit=100', apiKey),
   ]);
 
-  const [playerResult, projectionResult, redraftResult, dynastyResult, adpResult, injuryResult] = endpointResults;
+  const [playerResult, projectionResult, redraftResult, dynastyResult, adpResult, injuryResult, newsResult] = endpointResults;
   if (playerResult.status === 'rejected') {
     return Response.json({ configured: true, error: playerResult.reason instanceof Error ? playerResult.reason.message : 'FantasyPros player data was unavailable.' }, { status: 502 });
   }
@@ -94,6 +95,7 @@ export async function GET(request: Request) {
   const dynastyById = dynastyResult.status === 'fulfilled' ? rankMap(dynastyResult.value) : new Map<string, JsonRecord>();
   const adpById = adpResult.status === 'fulfilled' ? rankMap(adpResult.value) : new Map<string, JsonRecord>();
   const injuryById = injuryResult.status === 'fulfilled' ? rankMap(injuryResult.value) : new Map<string, JsonRecord>();
+  const newsById = newsResult.status === 'fulfilled' ? rankMap(newsResult.value) : new Map<string, JsonRecord>();
 
   const players = records(playerResult.value, ['players', 'items']).map((player) => {
     const key = playerKey(player);
@@ -102,6 +104,7 @@ export async function GET(request: Request) {
     const dynasty = dynastyById.get(key) ?? {};
     const adp = adpById.get(key) ?? {};
     const injury = injuryById.get(key) ?? {};
+    const news = newsById.get(key) ?? {};
     const name = textValue(player.player_name, player.name, redraft.player_name, projection.name);
     const rawPosition = textValue(player.position_id, player.player_position_id, redraft.player_position_id, projection.position_id).split(',')[0].toUpperCase();
     const id = idValue(player.fpid, player.player_id, player.id) || name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
@@ -122,12 +125,14 @@ export async function GET(request: Request) {
       tier: Math.max(1, Math.round(tier)),
       bye: numberValue(player.bye_week ?? player.player_bye_week, 0),
       injuryStatus: textValue(injury.status, injury.injury_status, injury.player_status, player.injury_status) || undefined,
+      newsHeadline: textValue(news.title) || undefined,
+      newsUpdatedAt: textValue(news.created_formated, news.created, news.datetime) || undefined,
     };
   }).filter((player) => player.name && POSITIONS.has(player.pos) && (
     player.team !== 'FA' || player.projectedPoints > 0 || player.consensusRank < 999 || player.dynastyRank < 999 || player.adp < 999
   ));
 
-  const warnings = endpointResults.slice(1).flatMap((result, index) => result.status === 'rejected' ? [`${['Projections', 'Redraft rankings', 'Dynasty rankings', 'ADP', 'Injuries'][index]} could not be refreshed.`] : []);
+  const warnings = endpointResults.slice(1).flatMap((result, index) => result.status === 'rejected' ? [`${['Projections', 'Redraft rankings', 'Dynasty rankings', 'ADP', 'Injuries', 'News'][index]} could not be refreshed.`] : []);
   const missingCoreRankings = redraftResult.status === 'rejected' || dynastyResult.status === 'rejected';
   if (players.length < 100 || missingCoreRankings) {
     return Response.json({

@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { ArrowRight, BrainCircuit, Check, ChevronRight, Database, Download, Link2, RefreshCw, RotateCcw, Search, Upload } from 'lucide-react';
+import { ArrowRight, BrainCircuit, Check, ChevronRight, Database, Download, ExternalLink, Link2, RefreshCw, RotateCcw, Search, Upload } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -17,7 +17,24 @@ const defaultSettings: LeagueSettings = {
 };
 const defaultTeams = Array.from({ length: 12 }, (_, index) => `Team ${index + 1}`);
 type DataSource = 'demo' | 'fantasypros' | 'espn' | 'csv';
-type SavedState = { players: Player[]; drafted: DraftedPlayer[]; settings: LeagueSettings; teams?: string[]; espnLeagueId?: string; espnSeason?: number; dataSource?: DataSource; lastFantasyProsSync?: string };
+type LeagueSource = 'manual' | 'espn-public' | 'fantasypros-mcp';
+type LeagueSnapshot = {
+  leagueName?: string;
+  season?: number;
+  teams: Array<string | { name: string; isMine?: boolean }>;
+  myTeam?: string;
+  scoring?: string;
+  starters?: Partial<LeagueSettings['starters']>;
+  keepers?: Array<{ playerName: string; owner: string }>;
+  picks?: Array<{ playerName: string; owner: string; pick?: number }>;
+  rosters?: Array<{ team: string; players: string[] }>;
+  updatedAt?: string;
+};
+type SavedState = {
+  players: Player[]; drafted: DraftedPlayer[]; settings: LeagueSettings; teams?: string[]; espnLeagueId?: string; espnSeason?: number;
+  dataSource?: DataSource; lastFantasyProsSync?: string; leagueSource?: LeagueSource; leagueSnapshotUpdatedAt?: string;
+  leagueRosters?: Array<{ team: string; players: string[] }>; espnLeagueName?: string;
+};
 
 export default function Home() {
   const [players, setPlayers] = useState<Player[]>(demoPlayers);
@@ -28,6 +45,10 @@ export default function Home() {
   const [espnSeason, setEspnSeason] = useState(new Date().getFullYear());
   const [espnSyncing, setEspnSyncing] = useState(false);
   const [espnLeagueName, setEspnLeagueName] = useState('');
+  const [leagueSource, setLeagueSource] = useState<LeagueSource>('manual');
+  const [leagueSnapshotUpdatedAt, setLeagueSnapshotUpdatedAt] = useState('');
+  const [leagueRosters, setLeagueRosters] = useState<Array<{ team: string; players: string[] }>>([]);
+  const [leagueSnapshotText, setLeagueSnapshotText] = useState('');
   const [dataSource, setDataSource] = useState<DataSource>('demo');
   const [lastFantasyProsSync, setLastFantasyProsSync] = useState('');
   const [fantasyProsSyncing, setFantasyProsSyncing] = useState(false);
@@ -51,13 +72,17 @@ export default function Home() {
         if (saved.espnSeason) setEspnSeason(saved.espnSeason);
         if (saved.dataSource) setDataSource(saved.dataSource);
         if (saved.lastFantasyProsSync) setLastFantasyProsSync(saved.lastFantasyProsSync);
+        if (saved.leagueSource) setLeagueSource(saved.leagueSource);
+        if (saved.leagueSnapshotUpdatedAt) setLeagueSnapshotUpdatedAt(saved.leagueSnapshotUpdatedAt);
+        if (saved.leagueRosters) setLeagueRosters(saved.leagueRosters);
+        if (saved.espnLeagueName) setEspnLeagueName(saved.espnLeagueName);
       } catch {}
     }
     setHydrated(true);
   }, []);
   useEffect(() => {
-    if (hydrated) localStorage.setItem('fourth-down-state', JSON.stringify({ players, drafted, settings, teams, espnLeagueId, espnSeason, dataSource, lastFantasyProsSync }));
-  }, [players, drafted, settings, teams, espnLeagueId, espnSeason, dataSource, lastFantasyProsSync, hydrated]);
+    if (hydrated) localStorage.setItem('fourth-down-state', JSON.stringify({ players, drafted, settings, teams, espnLeagueId, espnSeason, dataSource, lastFantasyProsSync, leagueSource, leagueSnapshotUpdatedAt, leagueRosters, espnLeagueName }));
+  }, [players, drafted, settings, teams, espnLeagueId, espnSeason, dataSource, lastFantasyProsSync, leagueSource, leagueSnapshotUpdatedAt, leagueRosters, espnLeagueName, hydrated]);
 
   useEffect(() => {
     if (!hydrated || dataSource !== 'fantasypros' || !lastFantasyProsSync) return;
@@ -66,7 +91,7 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated]);
 
-  const available = useMemo(() => players.filter((player) => !drafted.some((entry) => entry.playerId === player.id)), [players, drafted]);
+  const available = useMemo(() => players.filter((player) => !drafted.some((entry) => entry.playerId === player.id || entry.playerName?.toLowerCase() === player.name.toLowerCase())), [players, drafted]);
   const recommendations = useMemo(() => rankAvailable(players, drafted, settings), [players, drafted, settings]);
   const best = recommendations[0];
   const draftPicks = drafted.filter((entry) => entry.kind === 'draft');
@@ -96,6 +121,20 @@ export default function Home() {
       execute: () => best ? { pick: currentPick, player: best.name, position: best.pos, team: best.team, score: Number(best.score.toFixed(1)), signals: best.components, rationale: best.rationale } : { pick: currentPick, player: null },
     });
     register({
+      name: 'read_draft_state', title: 'Read complete draft state',
+      description: 'Return league settings, keepers, picks, roster context, and the top five current recommendations for a focused on-the-clock analysis.',
+      inputSchema: { type: 'object', properties: {}, additionalProperties: false },
+      annotations: { readOnlyHint: true, untrustedContentHint: false },
+      execute: () => ({
+        league: { name: espnLeagueName || undefined, source: leagueSource, teams, settings, updatedAt: leagueSnapshotUpdatedAt || undefined },
+        currentPick, currentOwner, isMyPick,
+        keepers: keepers.map((entry) => ({ player: entry.playerName ?? players.find((player) => player.id === entry.playerId)?.name ?? entry.playerId, owner: entry.owner })),
+        picks: draftPicks.map((entry) => ({ pick: entry.pick, player: entry.playerName ?? players.find((player) => player.id === entry.playerId)?.name ?? entry.playerId, owner: entry.owner })),
+        rosters: leagueRosters,
+        recommendations: recommendations.slice(0, 5).map((player) => ({ player: player.name, position: player.pos, team: player.team, score: Number(player.score.toFixed(1)), signals: player.components, rationale: player.rationale })),
+      }),
+    });
+    register({
       name: 'record_draft_pick', title: 'Record draft pick',
       description: 'Record one selected player for an owner and immediately update the visible board and recommendation.',
       inputSchema: { type: 'object', properties: { playerName: { type: 'string' }, owner: { type: 'string' } }, required: ['playerName', 'owner'], additionalProperties: false },
@@ -106,7 +145,7 @@ export default function Home() {
         const player = available.find((candidate) => candidate.name.toLowerCase() === values.playerName!.toString().toLowerCase());
         if (!player) throw new Error('That player is not available in the current pool.');
         const pick = currentPick;
-        setDrafted((entries) => [...entries, { playerId: player.id, owner: values.owner as string, pick, kind: 'draft' }]);
+        setDrafted((entries) => [...entries, { playerId: player.id, playerName: player.name, owner: values.owner as string, pick, kind: 'draft' }]);
         setNotice(`${player.name} recorded for ${values.owner}.`);
         return { recorded: true, pick, player: player.name, owner: values.owner };
       },
@@ -123,19 +162,38 @@ export default function Home() {
           if (typeof keeper.playerName !== 'string' || typeof keeper.owner !== 'string') throw new Error(`Invalid keeper at index ${index}.`);
           const player = players.find((candidate) => candidate.name.toLowerCase() === keeper.playerName!.toLowerCase());
           if (!player) throw new Error(`${keeper.playerName} is not in the current player pool.`);
-          return { playerId: player.id, owner: keeper.owner, pick: index + 1, kind: 'keeper' as const };
+          return { playerId: player.id, playerName: player.name, owner: keeper.owner, pick: index + 1, kind: 'keeper' as const };
         });
         setDrafted((entries) => [...entries.filter((entry) => entry.kind !== 'keeper'), ...additions]);
         setNotice(`Added ${additions.length} keepers.`);
         return { loaded: additions.length };
       },
     });
+    register({
+      name: 'load_fantasypros_league_snapshot', title: 'Load FantasyPros league snapshot',
+      description: 'Load the active FantasyPros-synced ESPN league into Fourth Down, including teams, my team, scoring, starter slots, keepers, rosters, and any draft picks. Use FantasyPros league tools to assemble these fields first.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          leagueName: { type: 'string' }, season: { type: 'number' }, myTeam: { type: 'string' }, scoring: { type: 'string' }, updatedAt: { type: 'string' },
+          teams: { type: 'array', minItems: 2, maxItems: 32, items: { anyOf: [{ type: 'string' }, { type: 'object', properties: { name: { type: 'string' }, isMine: { type: 'boolean' } }, required: ['name'], additionalProperties: false }] } },
+          starters: { type: 'object', properties: { QB: { type: 'number' }, RB: { type: 'number' }, WR: { type: 'number' }, TE: { type: 'number' }, FLEX: { type: 'number' }, K: { type: 'number' }, DST: { type: 'number' } }, additionalProperties: false },
+          keepers: { type: 'array', maxItems: 100, items: { type: 'object', properties: { playerName: { type: 'string' }, owner: { type: 'string' } }, required: ['playerName', 'owner'], additionalProperties: false } },
+          picks: { type: 'array', maxItems: 500, items: { type: 'object', properties: { playerName: { type: 'string' }, owner: { type: 'string' }, pick: { type: 'number' } }, required: ['playerName', 'owner'], additionalProperties: false } },
+          rosters: { type: 'array', maxItems: 32, items: { type: 'object', properties: { team: { type: 'string' }, players: { type: 'array', items: { type: 'string' } } }, required: ['team', 'players'], additionalProperties: false } },
+        },
+        required: ['teams'], additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, untrustedContentHint: true },
+      execute: (input) => applyLeagueSnapshot(input as LeagueSnapshot, 'fantasypros-mcp'),
+    });
     return () => lifecycle.abort();
-  }, [available, best, currentPick, players]);
+  }, [available, best, currentPick, currentOwner, draftPicks, espnLeagueName, isMyPick, keepers, leagueRosters, leagueSnapshotUpdatedAt, leagueSource, players, recommendations, settings, teams]);
 
   function addDraftPick() {
     if (!selectedPlayer) return;
-    setDrafted((entries) => [...entries, { playerId: selectedPlayer, owner: selectedOwner, pick: currentPick, kind: 'draft' }]);
+    const player = players.find((candidate) => candidate.id === selectedPlayer);
+    setDrafted((entries) => [...entries, { playerId: selectedPlayer, playerName: player?.name, owner: selectedOwner, pick: currentPick, kind: 'draft' }]);
     setSelectedPlayer(''); setPlayerQuery('');
     setSelectedOwner(ownerForPick(currentPick + 1, teams));
     setNotice('Pick recorded. Rankings updated.');
@@ -150,7 +208,7 @@ export default function Home() {
       const playerName = parts.length > 1 ? parts.slice(1).join('|') : parts[0];
       const owner = parts.length > 1 ? parts[0] : teams[Math.floor(index / 3)] ?? teams[teams.length - 1];
       const player = players.find((candidate) => candidate.name.toLowerCase() === playerName.toLowerCase());
-      if (player) additions.push({ playerId: player.id, owner, pick: index + 1, kind: 'keeper' }); else missing.push(playerName);
+      if (player) additions.push({ playerId: player.id, playerName: player.name, owner, pick: index + 1, kind: 'keeper' }); else missing.push(playerName);
     });
     setDrafted((entries) => [...entries.filter((entry) => entry.kind !== 'keeper'), ...additions]);
     setNotice(missing.length ? `Added ${additions.length}. Not found: ${missing.join(', ')}` : `Added ${additions.length} keepers.`);
@@ -169,8 +227,8 @@ export default function Home() {
       const player = available.find((candidate) => !used.has(candidate.id) && (candidate.name.toLowerCase() === cleaned.toLowerCase() || cleaned.toLowerCase().includes(candidate.name.toLowerCase())));
       const pick = firstPick + index;
       const owner = parts.length > 1 ? parts[0] : ownerForPick(pick, teams);
-      if (player) { additions.push({ playerId: player.id, owner, pick, kind: 'draft' }); used.add(player.id); }
-      else { additions.push({ playerId: `external-${cleaned.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${pick}`, owner, pick, kind: 'draft' }); outsidePool.push(cleaned); }
+      if (player) { additions.push({ playerId: player.id, playerName: player.name, owner, pick, kind: 'draft' }); used.add(player.id); }
+      else { additions.push({ playerId: `external-${cleaned.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${pick}`, playerName: cleaned, owner, pick, kind: 'draft' }); outsidePool.push(cleaned); }
     });
     setDrafted((entries) => [...entries, ...additions]);
     if (additions.length) setBulkPicksText('');
@@ -183,6 +241,56 @@ export default function Home() {
       setPlayers(imported); setDrafted([]); setDataSource('csv');
       setNotice(`Loaded ${imported.length} players. Previous keepers and picks were cleared.`);
     } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not read that CSV.'); }
+  }
+
+  function applyLeagueSnapshot(snapshot: LeagueSnapshot, source: LeagueSource = 'fantasypros-mcp') {
+    if (!snapshot || !Array.isArray(snapshot.teams)) throw new Error('The league snapshot must include a teams array.');
+    const syncedTeams = snapshot.teams.map((team) => typeof team === 'string' ? team.trim() : team?.name?.trim()).filter(Boolean);
+    if (syncedTeams.length < 2) throw new Error('The league snapshot needs at least two named teams.');
+    if (new Set(syncedTeams.map((team) => team.toLowerCase())).size !== syncedTeams.length) throw new Error('Team names must be unique.');
+    const inferredMine = snapshot.teams.find((team) => typeof team !== 'string' && team.isMine);
+    const myTeam = snapshot.myTeam?.trim() || (typeof inferredMine === 'object' ? inferredMine.name.trim() : '') || settings.userTeam;
+    const scoring = normalizeScoring(snapshot.scoring) ?? settings.scoring;
+    const validPositions = ['QB', 'RB', 'WR', 'TE', 'FLEX', 'K', 'DST'] as const;
+    const starters = { ...settings.starters };
+    validPositions.forEach((position) => {
+      const count = snapshot.starters?.[position];
+      if (typeof count === 'number' && Number.isFinite(count) && count >= 0 && count <= 10) starters[position] = Math.round(count);
+    });
+    const lookup = new Map(players.map((player) => [player.name.toLowerCase(), player]));
+    const missing: string[] = [];
+    const makeEntry = (item: { playerName: string; owner: string }, pick: number, kind: DraftedPlayer['kind']): DraftedPlayer => {
+      const name = item.playerName?.trim();
+      const owner = item.owner?.trim();
+      if (!name || !owner) throw new Error(`Every ${kind} needs a playerName and owner.`);
+      const player = lookup.get(name.toLowerCase());
+      if (!player) missing.push(name);
+      return { playerId: player?.id ?? `external-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${kind}-${pick}`, playerName: player?.name ?? name, owner, pick, kind };
+    };
+    const nextKeepers = (snapshot.keepers ?? []).map((keeper, index) => makeEntry(keeper, index + 1, 'keeper'));
+    const nextPicks = (snapshot.picks ?? []).map((pick, index) => makeEntry(pick, pick.pick && pick.pick > 0 ? Math.round(pick.pick) : index + 1, 'draft')).sort((a, b) => a.pick - b.pick);
+    setTeams(syncedTeams);
+    setSettings((current) => ({ ...current, scoring, starters, userTeam: syncedTeams.includes(myTeam) ? myTeam : current.userTeam, draftSlot: syncedTeams.includes(myTeam) ? syncedTeams.indexOf(myTeam) + 1 : current.draftSlot }));
+    setSelectedOwner(ownerForPick(nextPicks.length + 1, syncedTeams));
+    setDrafted((current) => [
+      ...(snapshot.keepers ? nextKeepers : current.filter((entry) => entry.kind === 'keeper')),
+      ...(snapshot.picks ? nextPicks : current.filter((entry) => entry.kind === 'draft')),
+    ]);
+    setLeagueRosters(Array.isArray(snapshot.rosters) ? snapshot.rosters.filter((roster) => roster?.team && Array.isArray(roster.players)) : []);
+    setEspnLeagueName(snapshot.leagueName?.trim() || espnLeagueName || 'FantasyPros league');
+    if (snapshot.season && Number.isInteger(snapshot.season)) setEspnSeason(snapshot.season);
+    setLeagueSource(source);
+    setLeagueSnapshotUpdatedAt(snapshot.updatedAt || new Date().toISOString());
+    setNotice(`League snapshot loaded: ${syncedTeams.length} teams, ${nextKeepers.length} keepers, ${nextPicks.length} picks.${missing.length ? ` ${missing.length} player${missing.length === 1 ? '' : 's'} will match automatically when the production player pool loads.` : ''}`);
+    return { loaded: true, teams: syncedTeams.length, keepers: nextKeepers.length, picks: nextPicks.length, unmatchedPlayers: missing };
+  }
+
+  function importLeagueSnapshot() {
+    try {
+      const snapshot = JSON.parse(leagueSnapshotText) as LeagueSnapshot;
+      applyLeagueSnapshot(snapshot);
+      setLeagueSnapshotText('');
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not read that league snapshot.'); }
   }
 
   async function syncFantasyPros(silent = false) {
@@ -206,8 +314,8 @@ export default function Home() {
       const nextByName = new Map(data.players.map((player) => [player.name.toLowerCase(), player]));
       setDrafted((entries) => entries.map((entry) => {
         const previousPlayer = oldPlayers.get(entry.playerId);
-        const replacement = previousPlayer ? nextByName.get(previousPlayer.name.toLowerCase()) : undefined;
-        return replacement ? { ...entry, playerId: replacement.id } : entry;
+        const replacement = nextByName.get((entry.playerName ?? previousPlayer?.name ?? '').toLowerCase());
+        return replacement ? { ...entry, playerId: replacement.id, playerName: replacement.name } : entry;
       }));
       setPlayers(data.players);
       setDataSource('fantasypros');
@@ -251,11 +359,12 @@ export default function Home() {
       const nextPlayers = syncedPlayers.length ? syncedPlayers : players;
       const syncedDrafted = (data.picks ?? []).map((pick) => {
         const player = nextPlayers.find((candidate) => candidate.espnId === pick.espnId || candidate.name.toLowerCase() === pick.playerName.toLowerCase());
-        return player ? { playerId: player.id, owner: pick.owner, pick: pick.pick, kind: pick.kind } satisfies DraftedPlayer : null;
+        return player ? { playerId: player.id, playerName: player.name, owner: pick.owner, pick: pick.pick, kind: pick.kind } satisfies DraftedPlayer : null;
       }).filter(Boolean) as DraftedPlayer[];
       const espnKeepers = syncedDrafted.filter((entry) => entry.kind === 'keeper');
       const espnPicks = syncedDrafted.filter((entry) => entry.kind === 'draft');
       setPlayers(nextPlayers); setTeams(syncedTeams); setEspnLeagueName(data.league?.name ?? 'ESPN League');
+      setLeagueSource('espn-public'); setLeagueSnapshotUpdatedAt(new Date().toISOString());
       if (dataSource !== 'fantasypros') setDataSource('espn');
       setSettings((current) => ({ ...current, scoring: data.league?.scoring ?? current.scoring, userTeam: syncedTeams.includes(current.userTeam) ? current.userTeam : syncedTeams[current.draftSlot - 1] ?? syncedTeams[0], }));
       setSelectedOwner(syncedTeams[0] ?? 'Team 1');
@@ -270,7 +379,7 @@ export default function Home() {
   }
 
   function exportState() {
-    const blob = new Blob([JSON.stringify({ players, drafted, settings, teams, espnLeagueId, espnSeason, dataSource, lastFantasyProsSync }, null, 2)], { type: 'application/json' });
+    const blob = new Blob([JSON.stringify({ players, drafted, settings, teams, espnLeagueId, espnSeason, dataSource, lastFantasyProsSync, leagueSource, leagueSnapshotUpdatedAt, leagueRosters, espnLeagueName }, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const link = document.createElement('a'); link.href = url; link.download = 'fourth-down-draft.json'; link.click();
     URL.revokeObjectURL(url);
@@ -353,10 +462,19 @@ export default function Home() {
                   <p className="mt-2 text-center text-xs text-white/45">Data provided by <a className="underline underline-offset-2 hover:text-white" href="https://www.fantasypros.com/api-data/" target="_blank" rel="noreferrer">FantasyPros</a> · personal use only</p>
                 </div>
                 <div className="mb-4 rounded-xl border border-[#10271b]/15 bg-[#10271b]/5 p-3">
-                  <div className="mb-2 flex items-center gap-2"><span className="grid size-7 place-items-center rounded-md bg-[#10271b] text-white"><Link2 className="size-4" /></span><div><p className="text-sm font-semibold">ESPN league sync</p>{espnLeagueName && <p className="text-xs text-muted-foreground">Connected to {espnLeagueName}</p>}</div></div>
+                  <div className="mb-2 flex items-start justify-between gap-2"><div className="flex items-center gap-2"><span className="grid size-7 place-items-center rounded-md bg-[#10271b] text-white"><Link2 className="size-4" /></span><div><p className="text-sm font-semibold">FantasyPros league bridge</p><p className="text-xs text-muted-foreground">Authenticated ESPN context, without sharing credentials</p></div></div><Badge variant="outline">{leagueSource === 'fantasypros-mcp' ? 'Synced' : 'Ready'}</Badge></div>
+                  <p className="mb-2 text-xs leading-relaxed text-muted-foreground">Connect ESPN inside FantasyPros, then connect the official FantasyPros MCP server in ChatGPT or Codex. A connected assistant can send teams, settings, rosters, keepers, and picks into this draft room using its league-snapshot tool.</p>
+                  <a className="mb-3 inline-flex items-center gap-1 text-xs font-semibold underline underline-offset-2" href="https://support.fantasypros.com/hc/en-us/articles/55212611981851-How-do-I-connect-to-the-FantasyPros-MCP-Server" target="_blank" rel="noreferrer">Open official connection guide <ExternalLink className="size-3" /></a>
+                  {leagueSource === 'fantasypros-mcp' && <div className="mb-3 rounded-md bg-emerald-50 px-2.5 py-2 text-xs text-emerald-900"><b>{espnLeagueName || 'FantasyPros league'}</b> · {teams.length} teams · {keepers.length} keepers{leagueSnapshotUpdatedAt ? ` · Updated ${new Date(leagueSnapshotUpdatedAt).toLocaleString()}` : ''}</div>}
+                  <Textarea className="min-h-24 resize-y font-mono text-xs" value={leagueSnapshotText} onChange={(event) => setLeagueSnapshotText(event.target.value)} placeholder={'Optional fallback: paste a JSON league snapshot\n{"teams":["Team 1","Team 2"],"myTeam":"Team 1","keepers":[]}'} />
+                  <Button className="mt-2 w-full" variant="secondary" onClick={importLeagueSnapshot} disabled={!leagueSnapshotText.trim()}><Upload /> Load league snapshot</Button>
+                  <p className="mt-2 text-xs leading-relaxed text-muted-foreground">Fourth Down stores the snapshot only in this browser. It never receives your ESPN username, password, cookies, or FantasyPros OAuth tokens.</p>
+                </div>
+                <div className="mb-4 rounded-xl border border-[#10271b]/15 bg-[#10271b]/5 p-3">
+                  <div className="mb-2 flex items-center gap-2"><span className="grid size-7 place-items-center rounded-md bg-[#10271b] text-white"><Link2 className="size-4" /></span><div><p className="text-sm font-semibold">Direct ESPN sync</p>{leagueSource === 'espn-public' && espnLeagueName && <p className="text-xs text-muted-foreground">Connected to {espnLeagueName}</p>}</div></div>
                   <div className="grid grid-cols-[1fr_92px] gap-2"><Input inputMode="numeric" value={espnLeagueId} onChange={(event) => setEspnLeagueId(event.target.value.replace(/\D/g, ''))} placeholder="League ID" aria-label="ESPN League ID" /><Input inputMode="numeric" value={espnSeason} onChange={(event) => setEspnSeason(Number(event.target.value))} aria-label="ESPN season" /></div>
                   <Button className="mt-2 w-full" onClick={syncEspn} disabled={espnSyncing || !espnLeagueId}>{espnSyncing ? 'Syncing…' : 'Sync ESPN now'}</Button>
-                  <p className="mt-2 text-xs leading-relaxed text-muted-foreground">Works directly for leagues ESPN exposes. Private leagues stay on manual entry—never paste ESPN cookies here.</p>
+                  <p className="mt-2 text-xs leading-relaxed text-muted-foreground">Works only for leagues ESPN exposes publicly. Use the authenticated FantasyPros bridge above for a private league.</p>
                 </div>
                 <p className="mb-2 text-sm font-medium">Backup and custom data</p><p className="mb-2 text-xs text-muted-foreground">CSV is optional. Columns: name, pos, team, projectedPoints, adp, age, dynastyRank, tier, bye</p><Textarea className="min-h-24 resize-y font-mono text-xs" value={csvText} onChange={(event) => setCsvText(event.target.value)} placeholder="Optional: paste a custom CSV…" /><div className="mt-3 grid grid-cols-2 gap-2"><Button variant="secondary" onClick={importPlayers} disabled={!csvText.trim()}><Upload /> Import CSV</Button><Button variant="outline" onClick={exportState}><Download /> Back up</Button></div>
               </TabsContent>
@@ -377,6 +495,14 @@ function PositionBadge({ pos }: { pos: string }) {
 }
 function Field({ label, children }: { label: string; children: ReactNode }) {
   return <label className="block text-sm"><span className="mb-1.5 block font-medium">{label}</span>{children}</label>;
+}
+function normalizeScoring(value?: string): LeagueSettings['scoring'] | undefined {
+  const normalized = value?.trim().toLowerCase().replace(/[_\s]+/g, '-');
+  if (!normalized) return undefined;
+  if (['ppr', 'full-ppr', '1-ppr', '1.0-ppr'].includes(normalized)) return 'ppr';
+  if (['half', 'half-ppr', '0.5-ppr'].includes(normalized)) return 'half-ppr';
+  if (['standard', 'std', 'non-ppr', '0-ppr'].includes(normalized)) return 'standard';
+  return undefined;
 }
 function ownerForPick(pick: number, teams: string[]) {
   const teamCount = teams.length || 12;

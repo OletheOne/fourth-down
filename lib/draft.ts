@@ -14,10 +14,13 @@ export type Player = {
   tier: number;
   bye: number;
   injuryStatus?: string;
+  newsHeadline?: string;
+  newsUpdatedAt?: string;
 };
 
 export type DraftedPlayer = {
   playerId: string;
+  playerName?: string;
   owner: string;
   pick: number;
   kind: 'keeper' | 'draft';
@@ -86,9 +89,10 @@ export type Recommendation = Player & {
 
 export function rankAvailable(players: Player[], drafted: DraftedPlayer[], settings: LeagueSettings): Recommendation[] {
   const draftedIds = new Set(drafted.map((entry) => entry.playerId));
-  const available = players.filter((player) => !draftedIds.has(player.id));
+  const draftedNames = new Set(drafted.map((entry) => entry.playerName?.toLowerCase()).filter(Boolean));
+  const available = players.filter((player) => !draftedIds.has(player.id) && !draftedNames.has(player.name.toLowerCase()));
   const myPlayers = drafted.filter((entry) => entry.owner === settings.userTeam)
-    .map((entry) => players.find((player) => player.id === entry.playerId)).filter(Boolean) as Player[];
+    .map((entry) => players.find((player) => player.id === entry.playerId || player.name.toLowerCase() === entry.playerName?.toLowerCase())).filter(Boolean) as Player[];
   const rosterCount = myPlayers.reduce<Record<string, number>>((acc, player) => {
     acc[player.pos] = (acc[player.pos] ?? 0) + 1;
     return acc;
@@ -98,6 +102,12 @@ export function rankAvailable(players: Player[], drafted: DraftedPlayer[], setti
   const projections = available.map((player) => player.projectedPoints);
   const minProjection = Math.min(...projections, 0);
   const maxProjection = Math.max(...projections, 1);
+  const recentDraft = drafted.filter((entry) => entry.kind === 'draft').slice(-12);
+  const recentPositionCounts = recentDraft.reduce<Record<string, number>>((counts, entry) => {
+    const selected = players.find((player) => player.id === entry.playerId || player.name.toLowerCase() === entry.playerName?.toLowerCase());
+    if (selected) counts[selected.pos] = (counts[selected.pos] ?? 0) + 1;
+    return counts;
+  }, {});
 
   return available.map((player) => {
     const receptionBoost = settings.scoring === 'ppr' ? (player.pos === 'TE' ? 10 : player.pos === 'WR' ? 7 : player.pos === 'RB' ? 3 : 0)
@@ -118,7 +128,9 @@ export function rankAvailable(players: Player[], drafted: DraftedPlayer[], setti
     const filled = rosterCount[player.pos] ?? 0;
     const rosterFit = clamp(filled < starterNeed ? 86 - filled * 13 : 38 - (filled - starterNeed) * 10);
     const picksUntilNext = Math.max(1, nextPick - (drafted.filter((entry) => entry.kind === 'draft').length + 1));
-    const urgency = clamp(100 / (1 + Math.exp((player.adp - (drafted.length + picksUntilNext * 0.72)) / 5)));
+    const positionalRun = clamp((recentPositionCounts[player.pos] ?? 0) * 13);
+    const urgencyFromAdp = 100 / (1 + Math.exp((player.adp - (drafted.length + picksUntilNext * 0.72)) / 5));
+    const urgency = clamp(urgencyFromAdp * 0.72 + positionalRun * 0.28);
     const score = winNow * (0.54 - dynastyWeight / 2) + dynasty * dynastyWeight + scarcity * 0.13 + rosterFit * 0.13 + urgency * (0.20 - dynastyWeight / 2);
     return {
       ...player, score, components: { winNow, dynasty, scarcity, rosterFit, urgency },
@@ -128,7 +140,9 @@ export function rankAvailable(players: Player[], drafted: DraftedPlayer[], setti
         `${player.pos}${player.tier === 1 ? ' elite-tier scarcity' : ` tier ${player.tier}`} with a ${Math.max(0, drop).toFixed(1)}-point drop to the next option`,
         filled < starterNeed ? `fills an open ${player.pos} starter need` : `adds depth after ${Math.round(filled)} rostered ${player.pos}${filled === 1 ? '' : 's'}`,
         urgency > 62 ? 'unlikely to survive to your next turn' : urgency < 35 ? 'has a reasonable chance to reach your next turn' : 'availability at your next turn is uncertain',
+        ...(recentPositionCounts[player.pos] ? [`${recentPositionCounts[player.pos]} ${player.pos}${recentPositionCounts[player.pos] === 1 ? '' : 's'} selected in the last ${recentDraft.length} picks`] : []),
         ...(injuryPenalty ? [`current ${player.injuryStatus} designation is reducing the recommendation`] : []),
+        ...(player.newsHeadline ? [`latest FantasyPros news: ${player.newsHeadline}`] : []),
       ],
     };
   }).sort((a, b) => b.score - a.score);
