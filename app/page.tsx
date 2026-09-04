@@ -25,7 +25,7 @@ type LeagueSnapshot = {
   myTeam?: string;
   scoring?: string;
   starters?: Partial<LeagueSettings['starters']>;
-  keepers?: Array<{ playerName: string; owner: string }>;
+  keepers?: Array<{ playerName: string; owner: string; originalRound?: number; seasonsKept?: number; costRound?: number }>;
   picks?: Array<{ playerName: string; owner: string; pick?: number }>;
   rosters?: Array<{ team: string; players: string[] }>;
   updatedAt?: string;
@@ -92,11 +92,11 @@ export default function Home() {
   }, [hydrated]);
 
   const available = useMemo(() => players.filter((player) => !drafted.some((entry) => entry.playerId === player.id || entry.playerName?.toLowerCase() === player.name.toLowerCase())), [players, drafted]);
-  const recommendations = useMemo(() => rankAvailable(players, drafted, settings), [players, drafted, settings]);
-  const best = recommendations[0];
   const draftPicks = drafted.filter((entry) => entry.kind === 'draft');
   const keepers = drafted.filter((entry) => entry.kind === 'keeper');
-  const currentPick = draftPicks.length + 1;
+  const recommendations = useMemo(() => rankAvailable(players, drafted, settings, teams), [players, drafted, settings, teams]);
+  const best = recommendations[0];
+  const currentPick = nextOpenDraftPick(draftPicks, keepers, teams);
   const currentOwner = ownerForPick(currentPick, teams);
   const isMyPick = currentOwner === settings.userTeam;
   const sourceLabel = dataSource === 'fantasypros' ? 'FantasyPros live' : dataSource === 'espn' ? 'ESPN data' : dataSource === 'csv' ? 'Custom CSV' : 'Demo data';
@@ -128,7 +128,7 @@ export default function Home() {
       execute: () => ({
         league: { name: espnLeagueName || undefined, source: leagueSource, teams, settings, updatedAt: leagueSnapshotUpdatedAt || undefined },
         currentPick, currentOwner, isMyPick,
-        keepers: keepers.map((entry) => ({ player: entry.playerName ?? players.find((player) => player.id === entry.playerId)?.name ?? entry.playerId, owner: entry.owner })),
+          keepers: keepers.map((entry) => ({ player: entry.playerName ?? players.find((player) => player.id === entry.playerId)?.name ?? entry.playerId, owner: entry.owner, originalRound: entry.originalRound, seasonsKept: entry.seasonsKept, costRound: entry.costRound })),
         picks: draftPicks.map((entry) => ({ pick: entry.pick, player: entry.playerName ?? players.find((player) => player.id === entry.playerId)?.name ?? entry.playerId, owner: entry.owner })),
         rosters: leagueRosters,
         recommendations: recommendations.slice(0, 5).map((player) => ({ player: player.name, position: player.pos, team: player.team, score: Number(player.score.toFixed(1)), signals: player.components, rationale: player.rationale })),
@@ -152,21 +152,25 @@ export default function Home() {
     });
     register({
       name: 'load_keeper_players', title: 'Load keeper players',
-      description: 'Replace the keeper list in one batch. Each keeper must match a player in the imported pool.',
-      inputSchema: { type: 'object', properties: { keepers: { type: 'array', items: { type: 'object', properties: { playerName: { type: 'string' }, owner: { type: 'string' } }, required: ['playerName', 'owner'], additionalProperties: false }, maxItems: 36 } }, required: ['keepers'], additionalProperties: false },
+      description: 'Replace the keeper list in one batch. Include originalRound and seasonsKept to calculate this year’s forfeited round automatically, or provide costRound directly.',
+      inputSchema: { type: 'object', properties: { keepers: { type: 'array', items: { type: 'object', properties: { playerName: { type: 'string' }, owner: { type: 'string' }, originalRound: { type: 'number' }, seasonsKept: { type: 'number' }, costRound: { type: 'number' } }, required: ['playerName', 'owner'], additionalProperties: false }, maxItems: 36 } }, required: ['keepers'], additionalProperties: false },
       annotations: { readOnlyHint: false, untrustedContentHint: false },
       execute: (input) => {
-        const values = input as { keepers?: Array<{ playerName?: unknown; owner?: unknown }> };
+        const values = input as { keepers?: Array<{ playerName?: unknown; owner?: unknown; originalRound?: unknown; seasonsKept?: unknown; costRound?: unknown }> };
         if (!Array.isArray(values.keepers)) throw new Error('keepers must be an array.');
         const additions = values.keepers.map((keeper, index) => {
           if (typeof keeper.playerName !== 'string' || typeof keeper.owner !== 'string') throw new Error(`Invalid keeper at index ${index}.`);
           const player = players.find((candidate) => candidate.name.toLowerCase() === keeper.playerName!.toLowerCase());
           if (!player) throw new Error(`${keeper.playerName} is not in the current player pool.`);
-          return { playerId: player.id, playerName: player.name, owner: keeper.owner, pick: index + 1, kind: 'keeper' as const };
+          const originalRound = validRound(keeper.originalRound);
+          const seasonsKept = validCount(keeper.seasonsKept) ?? (originalRound ? 1 : undefined);
+          const costRound = validRound(keeper.costRound) ?? (originalRound ? Math.max(1, originalRound - (seasonsKept ?? 1)) : undefined);
+          return { playerId: player.id, playerName: player.name, owner: keeper.owner, pick: index + 1, kind: 'keeper' as const, originalRound, seasonsKept, costRound };
         });
-        setDrafted((entries) => [...entries.filter((entry) => entry.kind !== 'keeper'), ...additions]);
+        const resolved = resolveKeeperRoundCollisions(additions);
+        setDrafted((entries) => [...entries.filter((entry) => entry.kind !== 'keeper'), ...resolved]);
         setNotice(`Added ${additions.length} keepers.`);
-        return { loaded: additions.length };
+        return { loaded: resolved.length, keepers: resolved.map((keeper) => ({ playerName: keeper.playerName, owner: keeper.owner, costRound: keeper.costRound })) };
       },
     });
     register({
@@ -178,7 +182,7 @@ export default function Home() {
           leagueName: { type: 'string' }, season: { type: 'number' }, myTeam: { type: 'string' }, scoring: { type: 'string' }, updatedAt: { type: 'string' },
           teams: { type: 'array', minItems: 2, maxItems: 32, items: { anyOf: [{ type: 'string' }, { type: 'object', properties: { name: { type: 'string' }, isMine: { type: 'boolean' } }, required: ['name'], additionalProperties: false }] } },
           starters: { type: 'object', properties: { QB: { type: 'number' }, RB: { type: 'number' }, WR: { type: 'number' }, TE: { type: 'number' }, FLEX: { type: 'number' }, K: { type: 'number' }, DST: { type: 'number' } }, additionalProperties: false },
-          keepers: { type: 'array', maxItems: 100, items: { type: 'object', properties: { playerName: { type: 'string' }, owner: { type: 'string' } }, required: ['playerName', 'owner'], additionalProperties: false } },
+          keepers: { type: 'array', maxItems: 100, items: { type: 'object', properties: { playerName: { type: 'string' }, owner: { type: 'string' }, originalRound: { type: 'number' }, seasonsKept: { type: 'number' }, costRound: { type: 'number' } }, required: ['playerName', 'owner'], additionalProperties: false } },
           picks: { type: 'array', maxItems: 500, items: { type: 'object', properties: { playerName: { type: 'string' }, owner: { type: 'string' }, pick: { type: 'number' } }, required: ['playerName', 'owner'], additionalProperties: false } },
           rosters: { type: 'array', maxItems: 32, items: { type: 'object', properties: { team: { type: 'string' }, players: { type: 'array', items: { type: 'string' } } }, required: ['team', 'players'], additionalProperties: false } },
         },
@@ -193,9 +197,10 @@ export default function Home() {
   function addDraftPick() {
     if (!selectedPlayer) return;
     const player = players.find((candidate) => candidate.id === selectedPlayer);
-    setDrafted((entries) => [...entries, { playerId: selectedPlayer, playerName: player?.name, owner: selectedOwner, pick: currentPick, kind: 'draft' }]);
+    const entry: DraftedPlayer = { playerId: selectedPlayer, playerName: player?.name, owner: selectedOwner, pick: currentPick, kind: 'draft' };
+    setDrafted((entries) => [...entries, entry]);
     setSelectedPlayer(''); setPlayerQuery('');
-    setSelectedOwner(ownerForPick(currentPick + 1, teams));
+    setSelectedOwner(ownerForPick(nextOpenDraftPick([...draftPicks, entry], keepers, teams), teams));
     setNotice('Pick recorded. Rankings updated.');
   }
 
@@ -205,13 +210,20 @@ export default function Home() {
     const missing: string[] = [];
     rows.forEach((row, index) => {
       const parts = row.split('|').map((part) => part.trim());
-      const playerName = parts.length > 1 ? parts.slice(1).join('|') : parts[0];
+      const playerName = parts.length > 1 ? parts[1] : parts[0];
       const owner = parts.length > 1 ? parts[0] : teams[Math.floor(index / 3)] ?? teams[teams.length - 1];
+      const originalRound = validRound(parts[2]);
+      const seasonsKept = validCount(parts[3]) ?? (originalRound ? 1 : undefined);
+      const costRound = originalRound ? Math.max(1, originalRound - (seasonsKept ?? 1)) : undefined;
       const player = players.find((candidate) => candidate.name.toLowerCase() === playerName.toLowerCase());
-      if (player) additions.push({ playerId: player.id, playerName: player.name, owner, pick: index + 1, kind: 'keeper' }); else missing.push(playerName);
+      if (player) additions.push({ playerId: player.id, playerName: player.name, owner, pick: index + 1, kind: 'keeper', originalRound, seasonsKept, costRound }); else missing.push(playerName);
     });
-    setDrafted((entries) => [...entries.filter((entry) => entry.kind !== 'keeper'), ...additions]);
-    setNotice(missing.length ? `Added ${additions.length}. Not found: ${missing.join(', ')}` : `Added ${additions.length} keepers.`);
+    try {
+      const resolved = resolveKeeperRoundCollisions(additions);
+      setDrafted((entries) => [...entries.filter((entry) => entry.kind !== 'keeper'), ...resolved]);
+      const moved = resolved.filter((entry, index) => entry.costRound !== additions[index].costRound).length;
+      setNotice(missing.length ? `Added ${resolved.length}. Not found: ${missing.join(', ')}` : `Added ${resolved.length} keepers.${moved ? ` ${moved} duplicate round cost${moved === 1 ? ' was' : 's were'} moved one round earlier.` : ''}`);
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not calculate keeper costs.'); }
   }
 
   function importDraftPicks() {
@@ -219,16 +231,19 @@ export default function Home() {
     const additions: DraftedPlayer[] = [];
     const outsidePool: string[] = [];
     const used = new Set(drafted.map((entry) => entry.playerId));
-    const firstPick = draftPicks.length + 1;
+    const simulatedPicks = [...draftPicks];
     rows.forEach((row, index) => {
       const parts = row.split('|').map((part) => part.trim());
       const rawPlayer = parts.length > 1 ? parts.slice(1).join('|') : parts[0];
       const cleaned = rawPlayer.replace(/^#?\d+[.)\-:]?\s*/, '').trim();
       const player = available.find((candidate) => !used.has(candidate.id) && (candidate.name.toLowerCase() === cleaned.toLowerCase() || cleaned.toLowerCase().includes(candidate.name.toLowerCase())));
-      const pick = firstPick + index;
+      const pick = nextOpenDraftPick(simulatedPicks, keepers, teams);
       const owner = parts.length > 1 ? parts[0] : ownerForPick(pick, teams);
-      if (player) { additions.push({ playerId: player.id, playerName: player.name, owner, pick, kind: 'draft' }); used.add(player.id); }
-      else { additions.push({ playerId: `external-${cleaned.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${pick}`, playerName: cleaned, owner, pick, kind: 'draft' }); outsidePool.push(cleaned); }
+      const entry: DraftedPlayer = player
+        ? { playerId: player.id, playerName: player.name, owner, pick, kind: 'draft' }
+        : { playerId: `external-${cleaned.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${pick}`, playerName: cleaned, owner, pick, kind: 'draft' };
+      additions.push(entry); simulatedPicks.push(entry);
+      if (player) used.add(player.id); else outsidePool.push(cleaned);
     });
     setDrafted((entries) => [...entries, ...additions]);
     if (additions.length) setBulkPicksText('');
@@ -259,19 +274,24 @@ export default function Home() {
     });
     const lookup = new Map(players.map((player) => [player.name.toLowerCase(), player]));
     const missing: string[] = [];
-    const makeEntry = (item: { playerName: string; owner: string }, pick: number, kind: DraftedPlayer['kind']): DraftedPlayer => {
+    const makeEntry = (item: { playerName: string; owner: string; originalRound?: number; seasonsKept?: number; costRound?: number }, pick: number, kind: DraftedPlayer['kind']): DraftedPlayer => {
       const name = item.playerName?.trim();
       const owner = item.owner?.trim();
       if (!name || !owner) throw new Error(`Every ${kind} needs a playerName and owner.`);
       const player = lookup.get(name.toLowerCase());
       if (!player) missing.push(name);
-      return { playerId: player?.id ?? `external-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${kind}-${pick}`, playerName: player?.name ?? name, owner, pick, kind };
+      const originalRound = kind === 'keeper' ? validRound(item.originalRound) : undefined;
+      const seasonsKept = kind === 'keeper' ? validCount(item.seasonsKept) ?? (originalRound ? 1 : undefined) : undefined;
+      const costRound = kind === 'keeper' ? validRound(item.costRound) ?? (originalRound ? Math.max(1, originalRound - (seasonsKept ?? 1)) : undefined) : undefined;
+      return { playerId: player?.id ?? `external-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${kind}-${pick}`, playerName: player?.name ?? name, owner, pick, kind, originalRound, seasonsKept, costRound };
     };
-    const nextKeepers = (snapshot.keepers ?? []).map((keeper, index) => makeEntry(keeper, index + 1, 'keeper'));
+    const nextKeepers = resolveKeeperRoundCollisions((snapshot.keepers ?? []).map((keeper, index) => makeEntry(keeper, index + 1, 'keeper')));
     const nextPicks = (snapshot.picks ?? []).map((pick, index) => makeEntry(pick, pick.pick && pick.pick > 0 ? Math.round(pick.pick) : index + 1, 'draft')).sort((a, b) => a.pick - b.pick);
+    const effectiveKeepers = snapshot.keepers ? nextKeepers : keepers;
+    const effectivePicks = snapshot.picks ? nextPicks : draftPicks;
     setTeams(syncedTeams);
     setSettings((current) => ({ ...current, scoring, starters, userTeam: syncedTeams.includes(myTeam) ? myTeam : current.userTeam, draftSlot: syncedTeams.includes(myTeam) ? syncedTeams.indexOf(myTeam) + 1 : current.draftSlot }));
-    setSelectedOwner(ownerForPick(nextPicks.length + 1, syncedTeams));
+    setSelectedOwner(ownerForPick(nextOpenDraftPick(effectivePicks, effectiveKeepers, syncedTeams), syncedTeams));
     setDrafted((current) => [
       ...(snapshot.keepers ? nextKeepers : current.filter((entry) => entry.kind === 'keeper')),
       ...(snapshot.picks ? nextPicks : current.filter((entry) => entry.kind === 'draft')),
@@ -445,7 +465,13 @@ export default function Home() {
           <div className="rounded-2xl border bg-card p-5 shadow-sm">
             <Tabs defaultValue="keepers">
               <TabsList className="grid w-full grid-cols-4"><TabsTrigger value="keepers">Keepers</TabsTrigger><TabsTrigger value="picks">Picks</TabsTrigger><TabsTrigger value="setup">Setup</TabsTrigger><TabsTrigger value="data">Data</TabsTrigger></TabsList>
-              <TabsContent value="keepers" className="pt-4"><p className="mb-3 text-sm text-muted-foreground">One per line. Use <code>Team 4 | Player Name</code>, or paste 3 players per team in team order.</p><Textarea className="min-h-32 resize-y" value={keepersText} onChange={(event) => setKeepersText(event.target.value)} placeholder={'Team 1 | Player Name\nTeam 1 | Player Name\nTeam 1 | Player Name'} /><Button className="mt-3 w-full" variant="secondary" onClick={importKeepers}>Load keepers ({keepers.length}/36)</Button></TabsContent>
+              <TabsContent value="keepers" className="pt-4">
+                <p className="mb-3 text-sm text-muted-foreground">One per line: <code>Team | Player | original round | years kept</code>. This year’s cost is calculated automatically. Example: round 5, kept 2 years = round 3.</p>
+                <Textarea className="min-h-32 resize-y" value={keepersText} onChange={(event) => setKeepersText(event.target.value)} placeholder={'Super Smash Burrows | Nico Collins | 5 | 2\nTeam Name | Player Name | 9 | 1'} />
+                <Button className="mt-3 w-full" variant="secondary" onClick={importKeepers}>Load keeper contracts ({keepers.length}/36)</Button>
+                {keepers.some((keeper) => keeper.costRound) && <div className="mt-3 space-y-1 rounded-lg border bg-secondary/40 p-2.5">{keepers.map((keeper) => <div key={`${keeper.owner}-${keeper.playerId}`} className="flex items-center justify-between gap-3 text-xs"><span className="truncate"><b>{keeper.playerName ?? players.find((player) => player.id === keeper.playerId)?.name}</b> · {keeper.owner}</span><Badge variant="outline">Costs R{keeper.costRound ?? '—'}</Badge></div>)}</div>}
+                <p className="mt-2 text-xs text-muted-foreground">Keeper-cost selections are automatically skipped on the live draft clock. If two keepers collide in one round, the later entry moves to the nearest earlier round.</p>
+              </TabsContent>
               <TabsContent value="picks" className="pt-4"><p className="mb-3 text-sm text-muted-foreground">Paste new picks in draft order, one player per line. Teams are assigned by snake order. To override: <code>Team | Player</code>.</p><Textarea className="min-h-32 resize-y" value={bulkPicksText} onChange={(event) => setBulkPicksText(event.target.value)} placeholder={'Player selected at pick 1\nPlayer selected at pick 2\nPlayer selected at pick 3'} /><Button className="mt-3 w-full" variant="secondary" onClick={importDraftPicks} disabled={!bulkPicksText.trim()}>Add picks after #{draftPicks.length}</Button></TabsContent>
               <TabsContent value="setup" className="space-y-4 pt-4"><Field label="My team"><Select value={settings.userTeam} onValueChange={(value) => { const team = value as string; setSettings({ ...settings, userTeam: team, draftSlot: teams.indexOf(team) + 1 }); }}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{teams.map((team) => <SelectItem key={team} value={team}>{team}</SelectItem>)}</SelectContent></Select></Field><Field label="Draft slot"><Select value={String(settings.draftSlot)} onValueChange={(value) => setSettings({ ...settings, draftSlot: Number(value), userTeam: teams[Number(value) - 1] ?? settings.userTeam })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{teams.map((_, index) => <SelectItem key={index + 1} value={String(index + 1)}>Slot {index + 1}</SelectItem>)}</SelectContent></Select></Field><Field label="Team direction"><Select value={settings.mode} onValueChange={(value) => setSettings({ ...settings, mode: value as LeagueSettings['mode'] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="contend">Contend now</SelectItem><SelectItem value="balanced">Balanced</SelectItem><SelectItem value="rebuild">Rebuild / youth</SelectItem></SelectContent></Select></Field><Field label="Scoring"><Select value={settings.scoring} onValueChange={(value) => setSettings({ ...settings, scoring: value as LeagueSettings['scoring'] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ppr">PPR</SelectItem><SelectItem value="half-ppr">Half PPR</SelectItem><SelectItem value="standard">Standard</SelectItem></SelectContent></Select></Field></TabsContent>
               <TabsContent value="data" className="pt-4">
@@ -503,6 +529,41 @@ function normalizeScoring(value?: string): LeagueSettings['scoring'] | undefined
   if (['half', 'half-ppr', '0.5-ppr'].includes(normalized)) return 'half-ppr';
   if (['standard', 'std', 'non-ppr', '0-ppr'].includes(normalized)) return 'standard';
   return undefined;
+}
+function validRound(value: unknown) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 1 && parsed <= 30 ? parsed : undefined;
+}
+function validCount(value: unknown) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= 0 && parsed <= 30 ? parsed : undefined;
+}
+function resolveKeeperRoundCollisions(entries: DraftedPlayer[]) {
+  const usedByOwner = new Map<string, Set<number>>();
+  return entries.map((entry) => {
+    if (!entry.costRound) return entry;
+    const key = entry.owner.toLowerCase();
+    const used = usedByOwner.get(key) ?? new Set<number>();
+    let costRound = entry.costRound;
+    while (used.has(costRound) && costRound > 1) costRound -= 1;
+    if (used.has(costRound)) throw new Error(`${entry.owner} has more keeper costs than available rounds near round ${entry.costRound}. Enter an explicit valid cost for one of them.`);
+    used.add(costRound); usedByOwner.set(key, used);
+    return { ...entry, costRound };
+  });
+}
+function keeperBoardPick(entry: DraftedPlayer, teams: string[]) {
+  if (!entry.costRound) return undefined;
+  const slot = teams.findIndex((team) => team.toLowerCase() === entry.owner.toLowerCase()) + 1;
+  if (!slot) return undefined;
+  const pickInRound = entry.costRound % 2 === 1 ? slot : teams.length - slot + 1;
+  return (entry.costRound - 1) * teams.length + pickInRound;
+}
+function nextOpenDraftPick(picks: DraftedPlayer[], keepers: DraftedPlayer[], teams: string[]) {
+  const used = new Set(picks.map((entry) => entry.pick));
+  const reserved = new Set(keepers.map((entry) => keeperBoardPick(entry, teams)).filter((pick): pick is number => Boolean(pick)));
+  let pick = 1;
+  while ((used.has(pick) || reserved.has(pick)) && pick < 10000) pick += 1;
+  return pick;
 }
 function ownerForPick(pick: number, teams: string[]) {
   const teamCount = teams.length || 12;

@@ -24,6 +24,9 @@ export type DraftedPlayer = {
   owner: string;
   pick: number;
   kind: 'keeper' | 'draft';
+  originalRound?: number;
+  seasonsKept?: number;
+  costRound?: number;
 };
 
 export type LeagueSettings = {
@@ -87,7 +90,7 @@ export type Recommendation = Player & {
   rationale: string[];
 };
 
-export function rankAvailable(players: Player[], drafted: DraftedPlayer[], settings: LeagueSettings): Recommendation[] {
+export function rankAvailable(players: Player[], drafted: DraftedPlayer[], settings: LeagueSettings, teams = Array.from({ length: 12 }, (_, index) => `Team ${index + 1}`)): Recommendation[] {
   const draftedIds = new Set(drafted.map((entry) => entry.playerId));
   const draftedNames = new Set(drafted.map((entry) => entry.playerName?.toLowerCase()).filter(Boolean));
   const available = players.filter((player) => !draftedIds.has(player.id) && !draftedNames.has(player.name.toLowerCase()));
@@ -97,7 +100,13 @@ export function rankAvailable(players: Player[], drafted: DraftedPlayer[], setti
     acc[player.pos] = (acc[player.pos] ?? 0) + 1;
     return acc;
   }, {});
-  const nextPick = estimateNextPick(drafted.filter((entry) => entry.kind === 'draft').length + 1, settings.draftSlot);
+  const draftPicks = drafted.filter((entry) => entry.kind === 'draft');
+  const keeperPicks = new Set(drafted.filter((entry) => entry.kind === 'keeper').map((entry) => keeperPickNumber(entry, teams)).filter((pick): pick is number => Boolean(pick)));
+  const usedPicks = new Set(draftPicks.map((entry) => entry.pick));
+  let currentBoardPick = 1;
+  while (usedPicks.has(currentBoardPick) || keeperPicks.has(currentBoardPick)) currentBoardPick += 1;
+  let nextPick = estimateNextPick(currentBoardPick, settings.draftSlot, teams.length);
+  while (keeperPicks.has(nextPick)) nextPick = estimateNextPick(nextPick, settings.draftSlot, teams.length);
   const dynastyWeight = settings.mode === 'rebuild' ? 0.34 : settings.mode === 'contend' ? 0.12 : 0.23;
   const projections = available.map((player) => player.projectedPoints);
   const minProjection = Math.min(...projections, 0);
@@ -127,7 +136,7 @@ export function rankAvailable(players: Player[], drafted: DraftedPlayer[], setti
       ? settings.starters[player.pos] + settings.starters.FLEX * 0.5 : settings.starters[player.pos];
     const filled = rosterCount[player.pos] ?? 0;
     const rosterFit = clamp(filled < starterNeed ? 86 - filled * 13 : 38 - (filled - starterNeed) * 10);
-    const picksUntilNext = Math.max(1, nextPick - (drafted.filter((entry) => entry.kind === 'draft').length + 1));
+    const picksUntilNext = Math.max(1, nextPick - currentBoardPick);
     const positionalRun = clamp((recentPositionCounts[player.pos] ?? 0) * 13);
     const urgencyFromAdp = 100 / (1 + Math.exp((player.adp - (drafted.length + picksUntilNext * 0.72)) / 5));
     const urgency = clamp(urgencyFromAdp * 0.72 + positionalRun * 0.28);
@@ -146,6 +155,14 @@ export function rankAvailable(players: Player[], drafted: DraftedPlayer[], setti
       ],
     };
   }).sort((a, b) => b.score - a.score);
+}
+
+function keeperPickNumber(entry: DraftedPlayer, teams: string[]) {
+  if (!entry.costRound) return undefined;
+  const slot = teams.findIndex((team) => team.toLowerCase() === entry.owner.toLowerCase()) + 1;
+  if (!slot) return undefined;
+  const pickInRound = entry.costRound % 2 === 1 ? slot : teams.length - slot + 1;
+  return (entry.costRound - 1) * teams.length + pickInRound;
 }
 
 export function estimateNextPick(currentPick: number, slot: number, teams = 12) {
