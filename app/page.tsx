@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState, type ReactNode } from 'react';
-import { ArrowRight, BrainCircuit, Check, ChevronRight, Database, Download, ExternalLink, Link2, RefreshCw, RotateCcw, Search, Upload } from 'lucide-react';
+import { ArrowRight, BrainCircuit, Check, ChevronRight, Database, ExternalLink, Link2, RefreshCw, RotateCcw, Search, Upload } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -18,6 +18,8 @@ const defaultSettings: LeagueSettings = {
 const defaultTeams = Array.from({ length: 12 }, (_, index) => `Team ${index + 1}`);
 type DataSource = 'demo' | 'fantasypros' | 'espn' | 'csv';
 type LeagueSource = 'manual' | 'espn-public' | 'fantasypros-mcp';
+type DraftMode = 'traditional' | 'keeper';
+type LeagueProfile = { id: string; name: string };
 type LeagueSnapshot = {
   leagueName?: string;
   season?: number;
@@ -33,7 +35,7 @@ type LeagueSnapshot = {
 type SavedState = {
   players: Player[]; drafted: DraftedPlayer[]; settings: LeagueSettings; teams?: string[]; espnLeagueId?: string; espnSeason?: number;
   dataSource?: DataSource; lastFantasyProsSync?: string; leagueSource?: LeagueSource; leagueSnapshotUpdatedAt?: string;
-  leagueRosters?: Array<{ team: string; players: string[] }>; espnLeagueName?: string;
+  leagueRosters?: Array<{ team: string; players: string[] }>; espnLeagueName?: string; draftMode?: DraftMode;
 };
 
 export default function Home() {
@@ -60,29 +62,30 @@ export default function Home() {
   const [csvText, setCsvText] = useState('');
   const [notice, setNotice] = useState('');
   const [hydrated, setHydrated] = useState(false);
+  const [draftMode, setDraftMode] = useState<DraftMode>('keeper');
+  const [profiles, setProfiles] = useState<LeagueProfile[]>([{ id: 'discord-league', name: 'Discord League' }]);
+  const [activeProfileId, setActiveProfileId] = useState('discord-league');
+  const [newProfileName, setNewProfileName] = useState('');
 
   useEffect(() => {
-    const raw = localStorage.getItem('fourth-down-state');
-    if (raw) {
-      try {
-        const saved = JSON.parse(raw) as SavedState;
-        setPlayers(saved.players); setDrafted(saved.drafted); setSettings(saved.settings);
-        if (saved.teams?.length) setTeams(saved.teams);
-        if (saved.espnLeagueId) setEspnLeagueId(saved.espnLeagueId);
-        if (saved.espnSeason) setEspnSeason(saved.espnSeason);
-        if (saved.dataSource) setDataSource(saved.dataSource);
-        if (saved.lastFantasyProsSync) setLastFantasyProsSync(saved.lastFantasyProsSync);
-        if (saved.leagueSource) setLeagueSource(saved.leagueSource);
-        if (saved.leagueSnapshotUpdatedAt) setLeagueSnapshotUpdatedAt(saved.leagueSnapshotUpdatedAt);
-        if (saved.leagueRosters) setLeagueRosters(saved.leagueRosters);
-        if (saved.espnLeagueName) setEspnLeagueName(saved.espnLeagueName);
-      } catch {}
+    let list: LeagueProfile[] = [{ id: 'discord-league', name: 'Discord League' }];
+    try { list = JSON.parse(localStorage.getItem('fourth-down-profiles') || 'null') || list; } catch {}
+    const active = localStorage.getItem('fourth-down-active-profile') || list[0].id;
+    let raw = localStorage.getItem(`fourth-down-profile:${active}`);
+    if (!raw) {
+      raw = localStorage.getItem('fourth-down-state');
+      if (raw) localStorage.setItem(`fourth-down-profile:${active}`, raw);
     }
+    setProfiles(list); setActiveProfileId(active);
+    if (raw) { try { loadSavedState(JSON.parse(raw) as SavedState); } catch {} }
     setHydrated(true);
   }, []);
   useEffect(() => {
-    if (hydrated) localStorage.setItem('fourth-down-state', JSON.stringify({ players, drafted, settings, teams, espnLeagueId, espnSeason, dataSource, lastFantasyProsSync, leagueSource, leagueSnapshotUpdatedAt, leagueRosters, espnLeagueName }));
-  }, [players, drafted, settings, teams, espnLeagueId, espnSeason, dataSource, lastFantasyProsSync, leagueSource, leagueSnapshotUpdatedAt, leagueRosters, espnLeagueName, hydrated]);
+    if (!hydrated) return;
+    localStorage.setItem(`fourth-down-profile:${activeProfileId}`, JSON.stringify(currentSavedState()));
+    localStorage.setItem('fourth-down-profiles', JSON.stringify(profiles));
+    localStorage.setItem('fourth-down-active-profile', activeProfileId);
+  }, [players, drafted, settings, teams, espnLeagueId, espnSeason, dataSource, lastFantasyProsSync, leagueSource, leagueSnapshotUpdatedAt, leagueRosters, espnLeagueName, draftMode, profiles, activeProfileId, hydrated]);
 
   useEffect(() => {
     if (!hydrated || dataSource !== 'fantasypros' || !lastFantasyProsSync) return;
@@ -91,15 +94,18 @@ export default function Home() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [hydrated]);
 
-  const available = useMemo(() => players.filter((player) => !drafted.some((entry) => entry.playerId === player.id || entry.playerName?.toLowerCase() === player.name.toLowerCase())), [players, drafted]);
+  const allKeepers = drafted.filter((entry) => entry.kind === 'keeper');
   const draftPicks = drafted.filter((entry) => entry.kind === 'draft');
-  const keepers = drafted.filter((entry) => entry.kind === 'keeper');
-  const pricedKeepers = keepers.filter((entry) => entry.costRound).length;
-  const recommendations = useMemo(() => rankAvailable(players, drafted, settings, teams), [players, drafted, settings, teams]);
+  const keepers = draftMode === 'keeper' ? allKeepers : [];
+  const activeDrafted = draftMode === 'keeper' ? drafted : draftPicks;
+  const available = useMemo(() => players.filter((player) => !activeDrafted.some((entry) => entry.playerId === player.id || entry.playerName?.toLowerCase() === player.name.toLowerCase())), [players, activeDrafted]);
+  const pricedKeepers = allKeepers.filter((entry) => entry.costRound).length;
+  const recommendations = useMemo(() => rankAvailable(players, activeDrafted, settings, teams), [players, activeDrafted, settings, teams]);
   const best = recommendations[0];
   const currentPick = nextOpenDraftPick(draftPicks, keepers, teams);
   const currentOwner = ownerForPick(currentPick, teams);
   const isMyPick = currentOwner === settings.userTeam;
+  const activeProfile = profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0];
   const sourceLabel = dataSource === 'fantasypros' ? 'FantasyPros live' : dataSource === 'espn' ? 'ESPN data' : dataSource === 'csv' ? 'Custom CSV' : 'Demo data';
   const filteredPlayers = available.filter((player) => `${player.name} ${player.pos} ${player.team}`.toLowerCase().includes(playerQuery.toLowerCase())).slice(0, 8);
 
@@ -127,7 +133,7 @@ export default function Home() {
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       annotations: { readOnlyHint: true, untrustedContentHint: false },
       execute: () => ({
-        league: { name: espnLeagueName || undefined, source: leagueSource, teams, settings, updatedAt: leagueSnapshotUpdatedAt || undefined },
+        league: { profile: activeProfile?.name, name: espnLeagueName || undefined, draftMode, source: leagueSource, teams, settings, updatedAt: leagueSnapshotUpdatedAt || undefined },
         currentPick, currentOwner, isMyPick,
           keepers: keepers.map((entry) => ({ player: entry.playerName ?? players.find((player) => player.id === entry.playerId)?.name ?? entry.playerId, owner: entry.owner, originalRound: entry.originalRound, seasonsKept: entry.seasonsKept, costRound: entry.costRound })),
         picks: draftPicks.map((entry) => ({ pick: entry.pick, player: entry.playerName ?? players.find((player) => player.id === entry.playerId)?.name ?? entry.playerId, owner: entry.owner })),
@@ -225,8 +231,69 @@ export default function Home() {
         return { updated: confirmed, totalKeepers: resolved.length, unmatched: missing, keepers: resolved.map((keeper) => ({ playerName: keeper.playerName, owner: keeper.owner, costRound: keeper.costRound })) };
       },
     });
+    register({
+      name: 'sync_mock_draft_board', title: 'Sync mock draft board',
+      description: 'Replace the current Traditional-mode profile’s mock draft board from FantasyPros or another mock room. Includes league settings, teams, and every completed pick in exact order.',
+      inputSchema: {
+        type: 'object', properties: {
+          leagueName: { type: 'string' }, myTeam: { type: 'string' }, scoring: { type: 'string' },
+          teams: { type: 'array', minItems: 2, maxItems: 32, items: { type: 'string' } },
+          starters: { type: 'object', properties: { QB: { type: 'number' }, RB: { type: 'number' }, WR: { type: 'number' }, TE: { type: 'number' }, FLEX: { type: 'number' }, K: { type: 'number' }, DST: { type: 'number' } }, additionalProperties: false },
+          picks: { type: 'array', maxItems: 500, items: { type: 'object', properties: { playerName: { type: 'string' }, owner: { type: 'string' }, pick: { type: 'number' } }, required: ['playerName', 'owner'], additionalProperties: false } },
+        }, required: ['leagueName', 'teams', 'picks'], additionalProperties: false,
+      },
+      annotations: { readOnlyHint: false, untrustedContentHint: true },
+      execute: (input) => {
+        const snapshot = input as LeagueSnapshot;
+        setDraftMode('traditional');
+        const result = applyLeagueSnapshot({ ...snapshot, keepers: [] }, 'fantasypros-mcp');
+        setNotice(`${snapshot.leagueName || 'Mock draft'} synced in Traditional mode with ${snapshot.picks?.length ?? 0} picks.`);
+        return { ...result, draftMode: 'traditional', profile: activeProfile?.name };
+      },
+    });
     return () => lifecycle.abort();
-  }, [available, best, currentPick, currentOwner, draftPicks, espnLeagueName, isMyPick, keepers, leagueRosters, leagueSnapshotUpdatedAt, leagueSource, players, recommendations, settings, teams]);
+  }, [activeProfile?.name, available, best, currentPick, currentOwner, draftMode, draftPicks, espnLeagueName, isMyPick, keepers, leagueRosters, leagueSnapshotUpdatedAt, leagueSource, players, recommendations, settings, teams]);
+
+  function currentSavedState(): SavedState {
+    return { players, drafted, settings, teams, espnLeagueId, espnSeason, dataSource, lastFantasyProsSync, leagueSource, leagueSnapshotUpdatedAt, leagueRosters, espnLeagueName, draftMode };
+  }
+
+  function loadSavedState(saved: SavedState) {
+    setPlayers(saved.players?.length ? saved.players : demoPlayers);
+    setDrafted(saved.drafted ?? []);
+    setSettings(saved.settings ?? defaultSettings);
+    setTeams(saved.teams?.length ? saved.teams : defaultTeams);
+    setEspnLeagueId(saved.espnLeagueId ?? ''); setEspnSeason(saved.espnSeason ?? new Date().getFullYear());
+    setDataSource(saved.dataSource ?? 'demo'); setLastFantasyProsSync(saved.lastFantasyProsSync ?? '');
+    setLeagueSource(saved.leagueSource ?? 'manual'); setLeagueSnapshotUpdatedAt(saved.leagueSnapshotUpdatedAt ?? '');
+    setLeagueRosters(saved.leagueRosters ?? []); setEspnLeagueName(saved.espnLeagueName ?? '');
+    setDraftMode(saved.draftMode ?? 'keeper'); setSelectedPlayer(''); setPlayerQuery(''); setKeepersText(''); setNotice('');
+  }
+
+  function switchLeagueProfile(id: string) {
+    if (id === activeProfileId) return;
+    localStorage.setItem(`fourth-down-profile:${activeProfileId}`, JSON.stringify(currentSavedState()));
+    const raw = localStorage.getItem(`fourth-down-profile:${id}`);
+    setHydrated(false); setActiveProfileId(id);
+    if (raw) loadSavedState(JSON.parse(raw) as SavedState);
+    window.setTimeout(() => setHydrated(true), 0);
+  }
+
+  function createLeagueProfile() {
+    const name = newProfileName.trim();
+    if (!name) return;
+    const id = `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'league'}-${Date.now()}`;
+    const profile: LeagueProfile = { id, name };
+    const initial: SavedState = {
+      players: dataSource === 'fantasypros' ? players : demoPlayers, drafted: [], teams: defaultTeams,
+      settings: { ...defaultSettings, scoring: settings.scoring }, espnSeason, dataSource: dataSource === 'fantasypros' ? 'fantasypros' : 'demo',
+      lastFantasyProsSync: dataSource === 'fantasypros' ? lastFantasyProsSync : '', leagueSource: 'manual', leagueRosters: [], espnLeagueName: name, draftMode: 'traditional',
+    };
+    localStorage.setItem(`fourth-down-profile:${activeProfileId}`, JSON.stringify(currentSavedState()));
+    localStorage.setItem(`fourth-down-profile:${id}`, JSON.stringify(initial));
+    setHydrated(false); setProfiles((current) => [...current, profile]); setActiveProfileId(id); loadSavedState(initial); setNewProfileName('');
+    window.setTimeout(() => { setHydrated(true); setNotice(`${name} created in Traditional mode.`); }, 0);
+  }
 
   function addDraftPick() {
     if (!selectedPlayer) return;
@@ -449,8 +516,9 @@ export default function Home() {
             <span className="grid size-9 place-items-center rounded-md bg-[#d7ff45] text-[#0a1510]"><BrainCircuit className="size-5" /></span>
             <div><p className="font-semibold leading-tight">Fourth Down</p><p className="text-xs text-white/55">Dynasty draft room</p></div>
           </div>
+          <Select value={activeProfileId} onValueChange={(value) => switchLeagueProfile(value as string)}><SelectTrigger className="h-9 w-[190px] border-white/15 bg-white/8 text-white"><SelectValue /></SelectTrigger><SelectContent>{profiles.map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.name}</SelectItem>)}</SelectContent></Select>
           <div className="hidden items-center gap-5 text-sm text-white/65 sm:flex">
-            <span><b className="text-white">{teams.length}</b> teams</span><span><b className="text-white">3</b> keepers</span><span><b className="text-white">{available.length}</b> available</span><span className={dataSource === 'demo' ? 'text-amber-300' : 'text-[#d7ff45]'}>{sourceLabel}</span>
+            <span><b className="text-white">{teams.length}</b> teams</span><span className="capitalize"><b className="text-white">{draftMode}</b> draft</span><span><b className="text-white">{available.length}</b> available</span><span className={dataSource === 'demo' ? 'text-amber-300' : 'text-[#d7ff45]'}>{sourceLabel}</span>
           </div>
           <Badge className={isMyPick ? 'bg-[#d7ff45] text-[#0a1510]' : 'bg-white/10 text-white'}>{isMyPick ? 'You’re on the clock' : `Pick ${currentPick}`}</Badge>
         </div>
@@ -499,9 +567,10 @@ export default function Home() {
           </div>
 
           <div className="rounded-2xl border bg-card p-5 shadow-sm">
-            <Tabs defaultValue="keepers">
-              <TabsList className="grid w-full grid-cols-4"><TabsTrigger value="keepers">Keepers</TabsTrigger><TabsTrigger value="picks">Picks</TabsTrigger><TabsTrigger value="setup">Setup</TabsTrigger><TabsTrigger value="data">Data</TabsTrigger></TabsList>
+            <Tabs defaultValue="setup">
+              <TabsList className="grid w-full grid-cols-3"><TabsTrigger value="keepers">Keepers</TabsTrigger><TabsTrigger value="setup">Setup</TabsTrigger><TabsTrigger value="data">Data</TabsTrigger></TabsList>
               <TabsContent value="keepers" className="pt-4">
+                {draftMode === 'traditional' && <div className="mb-3 rounded-lg border bg-secondary/50 p-3 text-sm"><b>Traditional mode is active.</b><p className="mt-1 text-muted-foreground">Keepers are retained in this profile but do not remove players or reserve picks. Switch this profile to Keeper mode in Setup to activate them.</p></div>}
                 <div className="mb-3 rounded-lg border border-[#10271b]/15 bg-[#10271b]/5 p-3">
                   <div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold">Draft-day resync planned</p><p className="mt-1 text-xs leading-relaxed text-muted-foreground">About 15 minutes before the draft, resync ESPN in FantasyPros. Then ask me to read its Keepers/Draft Picks page and sync Fourth Down.</p></div><Badge variant="outline">{keepers.length ? `${pricedKeepers}/${keepers.length} priced` : 'Waiting'}</Badge></div>
                   <a className="mt-2 inline-flex items-center gap-1 text-xs font-semibold underline underline-offset-2" href="https://www.fantasypros.com/nfl/myleagues/settings/" target="_blank" rel="noreferrer">Open FantasyPros league setup <ExternalLink className="size-3" /></a>
@@ -512,8 +581,14 @@ export default function Home() {
                 {keepers.length > 0 && <div className="mt-3 space-y-1 rounded-lg border bg-secondary/40 p-2.5">{keepers.map((keeper) => <div key={`${keeper.owner}-${keeper.playerId}`} className="flex items-center justify-between gap-3 text-xs"><span className="truncate"><b>{keeper.playerName ?? players.find((player) => player.id === keeper.playerId)?.name}</b> · {keeper.owner}</span><Badge variant="outline">{keeper.costRound ? `Costs R${keeper.costRound}` : 'Cost pending'}</Badge></div>)}</div>}
                 <p className="mt-2 text-xs text-muted-foreground">Keeper-cost selections are automatically skipped on the live draft clock. If two keepers collide in one round, the later entry moves to the nearest earlier round.</p>
               </TabsContent>
-              <TabsContent value="picks" className="pt-4"><p className="mb-3 text-sm text-muted-foreground">Paste new picks in draft order, one player per line. Teams are assigned by snake order. To override: <code>Team | Player</code>.</p><Textarea className="min-h-32 resize-y" value={bulkPicksText} onChange={(event) => setBulkPicksText(event.target.value)} placeholder={'Player selected at pick 1\nPlayer selected at pick 2\nPlayer selected at pick 3'} /><Button className="mt-3 w-full" variant="secondary" onClick={importDraftPicks} disabled={!bulkPicksText.trim()}>Add picks after #{draftPicks.length}</Button></TabsContent>
-              <TabsContent value="setup" className="space-y-4 pt-4"><Field label="My team"><Select value={settings.userTeam} onValueChange={(value) => { const team = value as string; setSettings({ ...settings, userTeam: team, draftSlot: teams.indexOf(team) + 1 }); }}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{teams.map((team) => <SelectItem key={team} value={team}>{team}</SelectItem>)}</SelectContent></Select></Field><Field label="Draft slot"><Select value={String(settings.draftSlot)} onValueChange={(value) => setSettings({ ...settings, draftSlot: Number(value), userTeam: teams[Number(value) - 1] ?? settings.userTeam })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{teams.map((_, index) => <SelectItem key={index + 1} value={String(index + 1)}>Slot {index + 1}</SelectItem>)}</SelectContent></Select></Field><Field label="Team direction"><Select value={settings.mode} onValueChange={(value) => setSettings({ ...settings, mode: value as LeagueSettings['mode'] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="contend">Contend now</SelectItem><SelectItem value="balanced">Balanced</SelectItem><SelectItem value="rebuild">Rebuild / youth</SelectItem></SelectContent></Select></Field><Field label="Scoring"><Select value={settings.scoring} onValueChange={(value) => setSettings({ ...settings, scoring: value as LeagueSettings['scoring'] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ppr">PPR</SelectItem><SelectItem value="half-ppr">Half PPR</SelectItem><SelectItem value="standard">Standard</SelectItem></SelectContent></Select></Field></TabsContent>
+              <TabsContent value="setup" className="space-y-4 pt-4">
+                <Field label="Draft format"><Select value={draftMode} onValueChange={(value) => setDraftMode(value as DraftMode)}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="traditional">Traditional draft</SelectItem><SelectItem value="keeper">Keeper draft</SelectItem></SelectContent></Select></Field>
+                <div><p className="mb-1.5 text-sm font-medium">Add another league</p><div className="grid grid-cols-[1fr_auto] gap-2"><Input value={newProfileName} onChange={(event) => setNewProfileName(event.target.value)} placeholder="Mock Draft League" /><Button variant="secondary" onClick={createLeagueProfile} disabled={!newProfileName.trim()}>Create</Button></div><p className="mt-1.5 text-xs text-muted-foreground">Every league keeps its own settings, keepers, picks, and sync state.</p></div>
+                <Field label="My team"><Select value={settings.userTeam} onValueChange={(value) => { const team = value as string; setSettings({ ...settings, userTeam: team, draftSlot: teams.indexOf(team) + 1 }); }}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{teams.map((team) => <SelectItem key={team} value={team}>{team}</SelectItem>)}</SelectContent></Select></Field>
+                <Field label="Draft slot"><Select value={String(settings.draftSlot)} onValueChange={(value) => setSettings({ ...settings, draftSlot: Number(value), userTeam: teams[Number(value) - 1] ?? settings.userTeam })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{teams.map((_, index) => <SelectItem key={index + 1} value={String(index + 1)}>Slot {index + 1}</SelectItem>)}</SelectContent></Select></Field>
+                <Field label="Team direction"><Select value={settings.mode} onValueChange={(value) => setSettings({ ...settings, mode: value as LeagueSettings['mode'] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="contend">Contend now</SelectItem><SelectItem value="balanced">Balanced</SelectItem><SelectItem value="rebuild">Rebuild / youth</SelectItem></SelectContent></Select></Field>
+                <Field label="Scoring"><Select value={settings.scoring} onValueChange={(value) => setSettings({ ...settings, scoring: value as LeagueSettings['scoring'] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ppr">PPR</SelectItem><SelectItem value="half-ppr">Half PPR</SelectItem><SelectItem value="standard">Standard</SelectItem></SelectContent></Select></Field>
+              </TabsContent>
               <TabsContent value="data" className="pt-4">
                 <div className="mb-4 rounded-xl border border-[#d7ff45]/50 bg-[#10271b] p-3 text-white">
                   <div className="mb-3 flex items-start justify-between gap-3">
@@ -529,20 +604,13 @@ export default function Home() {
                 </div>
                 <div className="mb-4 rounded-xl border border-[#10271b]/15 bg-[#10271b]/5 p-3">
                   <div className="mb-2 flex items-start justify-between gap-2"><div className="flex items-center gap-2"><span className="grid size-7 place-items-center rounded-md bg-[#10271b] text-white"><Link2 className="size-4" /></span><div><p className="text-sm font-semibold">FantasyPros league bridge</p><p className="text-xs text-muted-foreground">Authenticated ESPN context, without sharing credentials</p></div></div><Badge variant="outline">{leagueSource === 'fantasypros-mcp' ? 'Synced' : 'Ready'}</Badge></div>
-                  <p className="mb-2 text-xs leading-relaxed text-muted-foreground">Connect ESPN inside FantasyPros, then connect the official FantasyPros MCP server in ChatGPT or Codex. A connected assistant can send teams, settings, rosters, keepers, and picks into this draft room using its league-snapshot tool.</p>
+                  <p className="mb-2 text-xs leading-relaxed text-muted-foreground">A connected assistant can send teams, settings, rosters, keepers, and picks from an ESPN league or mock draft into the active profile. Mock-board sync replaces only that profile’s picks.</p>
                   <a className="mb-3 inline-flex items-center gap-1 text-xs font-semibold underline underline-offset-2" href="https://support.fantasypros.com/hc/en-us/articles/55212611981851-How-do-I-connect-to-the-FantasyPros-MCP-Server" target="_blank" rel="noreferrer">Open official connection guide <ExternalLink className="size-3" /></a>
                   {leagueSource === 'fantasypros-mcp' && <div className="mb-3 rounded-md bg-emerald-50 px-2.5 py-2 text-xs text-emerald-900"><b>{espnLeagueName || 'FantasyPros league'}</b> · {teams.length} teams · {keepers.length} keepers{leagueSnapshotUpdatedAt ? ` · Updated ${new Date(leagueSnapshotUpdatedAt).toLocaleString()}` : ''}</div>}
                   <Textarea className="min-h-24 resize-y font-mono text-xs" value={leagueSnapshotText} onChange={(event) => setLeagueSnapshotText(event.target.value)} placeholder={'Optional fallback: paste a JSON league snapshot\n{"teams":["Team 1","Team 2"],"myTeam":"Team 1","keepers":[]}'} />
                   <Button className="mt-2 w-full" variant="secondary" onClick={importLeagueSnapshot} disabled={!leagueSnapshotText.trim()}><Upload /> Load league snapshot</Button>
                   <p className="mt-2 text-xs leading-relaxed text-muted-foreground">Fourth Down stores the snapshot only in this browser. It never receives your ESPN username, password, cookies, or FantasyPros OAuth tokens.</p>
                 </div>
-                <div className="mb-4 rounded-xl border border-[#10271b]/15 bg-[#10271b]/5 p-3">
-                  <div className="mb-2 flex items-center gap-2"><span className="grid size-7 place-items-center rounded-md bg-[#10271b] text-white"><Link2 className="size-4" /></span><div><p className="text-sm font-semibold">Direct ESPN sync</p>{leagueSource === 'espn-public' && espnLeagueName && <p className="text-xs text-muted-foreground">Connected to {espnLeagueName}</p>}</div></div>
-                  <div className="grid grid-cols-[1fr_92px] gap-2"><Input inputMode="numeric" value={espnLeagueId} onChange={(event) => setEspnLeagueId(event.target.value.replace(/\D/g, ''))} placeholder="League ID" aria-label="ESPN League ID" /><Input inputMode="numeric" value={espnSeason} onChange={(event) => setEspnSeason(Number(event.target.value))} aria-label="ESPN season" /></div>
-                  <Button className="mt-2 w-full" onClick={syncEspn} disabled={espnSyncing || !espnLeagueId}>{espnSyncing ? 'Syncing…' : 'Sync ESPN now'}</Button>
-                  <p className="mt-2 text-xs leading-relaxed text-muted-foreground">Works only for leagues ESPN exposes publicly. Use the authenticated FantasyPros bridge above for a private league.</p>
-                </div>
-                <p className="mb-2 text-sm font-medium">Backup and custom data</p><p className="mb-2 text-xs text-muted-foreground">CSV is optional. Columns: name, pos, team, projectedPoints, adp, age, dynastyRank, tier, bye</p><Textarea className="min-h-24 resize-y font-mono text-xs" value={csvText} onChange={(event) => setCsvText(event.target.value)} placeholder="Optional: paste a custom CSV…" /><div className="mt-3 grid grid-cols-2 gap-2"><Button variant="secondary" onClick={importPlayers} disabled={!csvText.trim()}><Upload /> Import CSV</Button><Button variant="outline" onClick={exportState}><Download /> Back up</Button></div>
               </TabsContent>
             </Tabs>
           </div>
