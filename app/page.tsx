@@ -31,6 +31,7 @@ export default function Home() {
   const [selectedOwner, setSelectedOwner] = useState('Team 1');
   const [playerQuery, setPlayerQuery] = useState('');
   const [keepersText, setKeepersText] = useState('');
+  const [bulkPicksText, setBulkPicksText] = useState('');
   const [csvText, setCsvText] = useState('');
   const [notice, setNotice] = useState('');
   const [hydrated, setHydrated] = useState(false);
@@ -139,6 +140,27 @@ export default function Home() {
     });
     setDrafted((entries) => [...entries.filter((entry) => entry.kind !== 'keeper'), ...additions]);
     setNotice(missing.length ? `Added ${additions.length}. Not found: ${missing.join(', ')}` : `Added ${additions.length} keepers.`);
+  }
+
+  function importDraftPicks() {
+    const rows = bulkPicksText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+    const additions: DraftedPlayer[] = [];
+    const outsidePool: string[] = [];
+    const used = new Set(drafted.map((entry) => entry.playerId));
+    const firstPick = draftPicks.length + 1;
+    rows.forEach((row, index) => {
+      const parts = row.split('|').map((part) => part.trim());
+      const rawPlayer = parts.length > 1 ? parts.slice(1).join('|') : parts[0];
+      const cleaned = rawPlayer.replace(/^#?\d+[.)\-:]?\s*/, '').trim();
+      const player = available.find((candidate) => !used.has(candidate.id) && (candidate.name.toLowerCase() === cleaned.toLowerCase() || cleaned.toLowerCase().includes(candidate.name.toLowerCase())));
+      const pick = firstPick + index;
+      const owner = parts.length > 1 ? parts[0] : ownerForPick(pick, teams);
+      if (player) { additions.push({ playerId: player.id, owner, pick, kind: 'draft' }); used.add(player.id); }
+      else { additions.push({ playerId: `external-${cleaned.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${pick}`, owner, pick, kind: 'draft' }); outsidePool.push(cleaned); }
+    });
+    setDrafted((entries) => [...entries, ...additions]);
+    if (additions.length) setBulkPicksText('');
+    setNotice(outsidePool.length ? `Added all ${additions.length} picks. Outside the ranking pool: ${outsidePool.join(', ')}` : `Added ${additions.length} picks. Recommendation updated.`);
   }
 
   function importPlayers() {
@@ -263,8 +285,9 @@ export default function Home() {
 
           <div className="rounded-2xl border bg-card p-5 shadow-sm">
             <Tabs defaultValue="keepers">
-              <TabsList className="grid w-full grid-cols-3"><TabsTrigger value="keepers">Keepers</TabsTrigger><TabsTrigger value="setup">Setup</TabsTrigger><TabsTrigger value="data">Data</TabsTrigger></TabsList>
+              <TabsList className="grid w-full grid-cols-4"><TabsTrigger value="keepers">Keepers</TabsTrigger><TabsTrigger value="picks">Picks</TabsTrigger><TabsTrigger value="setup">Setup</TabsTrigger><TabsTrigger value="data">Data</TabsTrigger></TabsList>
               <TabsContent value="keepers" className="pt-4"><p className="mb-3 text-sm text-muted-foreground">One per line. Use <code>Team 4 | Player Name</code>, or paste 3 players per team in team order.</p><Textarea className="min-h-32 resize-y" value={keepersText} onChange={(event) => setKeepersText(event.target.value)} placeholder={'Team 1 | Player Name\nTeam 1 | Player Name\nTeam 1 | Player Name'} /><Button className="mt-3 w-full" variant="secondary" onClick={importKeepers}>Load keepers ({keepers.length}/36)</Button></TabsContent>
+              <TabsContent value="picks" className="pt-4"><p className="mb-3 text-sm text-muted-foreground">Paste new picks in draft order, one player per line. Teams are assigned by snake order. To override: <code>Team | Player</code>.</p><Textarea className="min-h-32 resize-y" value={bulkPicksText} onChange={(event) => setBulkPicksText(event.target.value)} placeholder={'Player selected at pick 1\nPlayer selected at pick 2\nPlayer selected at pick 3'} /><Button className="mt-3 w-full" variant="secondary" onClick={importDraftPicks} disabled={!bulkPicksText.trim()}>Add picks after #{draftPicks.length}</Button></TabsContent>
               <TabsContent value="setup" className="space-y-4 pt-4"><Field label="My team"><Select value={settings.userTeam} onValueChange={(value) => { const team = value as string; setSettings({ ...settings, userTeam: team, draftSlot: teams.indexOf(team) + 1 }); }}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{teams.map((team) => <SelectItem key={team} value={team}>{team}</SelectItem>)}</SelectContent></Select></Field><Field label="Draft slot"><Select value={String(settings.draftSlot)} onValueChange={(value) => setSettings({ ...settings, draftSlot: Number(value), userTeam: teams[Number(value) - 1] ?? settings.userTeam })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{teams.map((_, index) => <SelectItem key={index + 1} value={String(index + 1)}>Slot {index + 1}</SelectItem>)}</SelectContent></Select></Field><Field label="Team direction"><Select value={settings.mode} onValueChange={(value) => setSettings({ ...settings, mode: value as LeagueSettings['mode'] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="contend">Contend now</SelectItem><SelectItem value="balanced">Balanced</SelectItem><SelectItem value="rebuild">Rebuild / youth</SelectItem></SelectContent></Select></Field><Field label="Scoring"><Select value={settings.scoring} onValueChange={(value) => setSettings({ ...settings, scoring: value as LeagueSettings['scoring'] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ppr">PPR</SelectItem><SelectItem value="half-ppr">Half PPR</SelectItem><SelectItem value="standard">Standard</SelectItem></SelectContent></Select></Field></TabsContent>
               <TabsContent value="data" className="pt-4">
                 <div className="mb-4 rounded-xl border border-[#10271b]/15 bg-[#10271b]/5 p-3">

@@ -26,15 +26,16 @@ export async function GET(request: Request) {
   if (!leagueId || !/^\d+$/.test(leagueId)) return Response.json({ error: 'Enter the numeric ESPN League ID.' }, { status: 400 });
   if (!Number.isInteger(season) || season < 2020 || season > 2100) return Response.json({ error: 'Enter a valid season.' }, { status: 400 });
 
-  const endpoint = `https://fantasy.espn.com/apis/v3/games/ffl/seasons/${season}/segments/0/leagues/${leagueId}`;
+  const endpoint = `https://lm-api-reads.fantasy.espn.com/apis/v3/games/ffl/seasons/${season}/segments/0/leagues/${leagueId}`;
   const playerFilter = JSON.stringify({ players: { filterStatus: { value: ['FREEAGENT', 'WAIVERS', 'ONTEAM'] }, limit: 2000, sortPercOwned: { sortPriority: 1, sortAsc: false } } });
   try {
     const [leagueResponse, playerResponse] = await Promise.all([
       fetch(`${endpoint}?view=mSettings&view=mTeam&view=mRoster&view=mDraftDetail`, { headers: { Accept: 'application/json' } }),
       fetch(`${endpoint}?view=kona_player_info`, { headers: { Accept: 'application/json', 'X-Fantasy-Filter': playerFilter } }),
     ]);
-    if (leagueResponse.status === 401 || leagueResponse.status === 403) return Response.json({ error: 'ESPN is treating this as a private league. Use manual entry here; Fourth Down never asks for ESPN session cookies.' }, { status: 403 });
+    if (leagueResponse.status === 401 || leagueResponse.status === 403) return Response.json({ error: 'This ESPN league is private, so ESPN requires an authenticated session. Use the Keepers and Picks tabs for fast manual entry; Fourth Down never asks for ESPN cookies.' }, { status: 403 });
     if (!leagueResponse.ok) return Response.json({ error: `ESPN returned ${leagueResponse.status}. Check the League ID and season.` }, { status: 502 });
+    if (!leagueResponse.headers.get('content-type')?.includes('application/json')) return Response.json({ error: 'ESPN returned a sign-in page instead of league data. This usually means the league is private; use fast manual entry instead.' }, { status: 403 });
 
     const league = await leagueResponse.json() as {
       settings?: { name?: string; size?: number; scoringSettings?: { scoringItems?: Array<{ statId?: number; points?: number }> } };
