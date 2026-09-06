@@ -1,4 +1,4 @@
-const API_ROOT = 'https://api.fantasypros.com/v2/json';
+const API_ROOT = 'https://api.fantasypros.com/public/v2/json';
 const POSITIONS = new Set(['QB', 'RB', 'WR', 'TE', 'K', 'DST']);
 
 type JsonRecord = Record<string, unknown>;
@@ -47,10 +47,11 @@ function projectionPoints(player: JsonRecord, scoring: string) {
 async function fantasyProsFetch(path: string, apiKey: string) {
   const response = await fetch(`${API_ROOT}${path}`, {
     headers: { Accept: 'application/json', 'x-api-key': apiKey },
+    cache: 'no-store',
+    signal: AbortSignal.timeout(20000),
   });
   if (!response.ok) {
-    const detail = await response.text().catch(() => '');
-    throw new Error(`FantasyPros returned ${response.status}${detail ? `: ${detail.slice(0, 160)}` : ''}`);
+    throw new Error(`FantasyPros returned HTTP ${response.status} for ${path.split('?')[0]}.`);
   }
   return response.json() as Promise<unknown>;
 }
@@ -74,10 +75,11 @@ export async function GET(request: Request) {
     return Response.json({ error: 'Scoring must be STD, HALF, or PPR.' }, { status: 400 });
   }
 
-  const query = `scoring=${encodeURIComponent(scoring)}`;
+  // ALL is a draft position; the API's current-week default can reject it.
+  const query = `week=0&scoring=${encodeURIComponent(scoring)}`;
   const endpointResults = await Promise.allSettled([
     fantasyProsFetch('/nfl/players', apiKey),
-    fantasyProsFetch(`/nfl/${season}/projections?week=0&positions=QB:RB:WR:TE:K:DST&${query}`, apiKey),
+    fantasyProsFetch(`/nfl/${season}/projections?positions=QB:RB:WR:TE:K:DST&${query}`, apiKey),
     fantasyProsFetch(`/nfl/${season}/consensus-rankings?position=ALL&${query}`, apiKey),
     fantasyProsFetch(`/nfl/${season}/consensus-rankings?position=ALL&type=DK&${query}`, apiKey),
     fantasyProsFetch(`/nfl/${season}/consensus-rankings?position=ALL&type=ADP&${query}`, apiKey),
@@ -132,16 +134,25 @@ export async function GET(request: Request) {
     player.team !== 'FA' || player.projectedPoints > 0 || player.consensusRank < 999 || player.dynastyRank < 999 || player.adp < 999
   ));
 
-  const warnings = endpointResults.slice(1).flatMap((result, index) => result.status === 'rejected' ? [`${['Projections', 'Redraft rankings', 'Dynasty rankings', 'ADP', 'Injuries', 'News'][index]} could not be refreshed.`] : []);
-  const missingCoreRankings = redraftResult.status === 'rejected' || dynastyResult.status === 'rejected';
-  if (players.length < 100 || missingCoreRankings) {
+  const warnings = endpointResults.slice(1).flatMap((result, index) => result.status === 'rejected' ? [`${['Projections', 'Redraft rankings', 'Dynasty rankings', 'ADP', 'Injuries', 'News'][index]} could not be refreshed. ${result.reason instanceof Error ? result.reason.message : ''}`] : []);
+  const coverage = { projections: projectionById.size, redraft: redraftById.size, dynasty: dynastyById.size, adp: adpById.size };
+  if (projectionResult.status === 'rejected' || redraftResult.status === 'rejected' || dynastyResult.status === 'rejected') {
     return Response.json({
       configured: true,
-      code: 'sample_access',
-      error: `This FantasyPros key returned ${players.length} sample players instead of the production draft pool. Activate API access through a paid FantasyPros HOF membership, then refresh again.`,
+      code: 'upstream_error',
+      error: `FantasyPros player data was received, but required draft data failed. ${warnings.join(' ')}`,
+      receivedPlayers: players.length, coverage, warnings,
+    }, { status: 502, headers: { 'Cache-Control': 'no-store' } });
+  }
+  if (players.length < 100 || coverage.projections < 100 || coverage.redraft < 100 || coverage.dynasty < 100) {
+    return Response.json({
+      configured: true,
+      code: 'incomplete_data',
+      error: `FantasyPros returned an incomplete draft dataset (${players.length} players, ${coverage.projections} projections, ${coverage.redraft} redraft and ${coverage.dynasty} dynasty rankings). This may be limited API access or unavailable season data; your saved board has been retained.`,
       receivedPlayers: players.length,
+      coverage,
       warnings,
-    }, { status: 403, headers: { 'Cache-Control': 'no-store' } });
+    }, { status: 502, headers: { 'Cache-Control': 'no-store' } });
   }
   return Response.json({
     configured: true,
@@ -150,6 +161,7 @@ export async function GET(request: Request) {
     scoring,
     updatedAt: new Date().toISOString(),
     players,
+    coverage,
     warnings,
   }, { headers: { 'Cache-Control': 'private, max-age=900, stale-while-revalidate=21600' } });
 }
