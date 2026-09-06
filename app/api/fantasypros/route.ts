@@ -1,4 +1,4 @@
-const API_ROOT = 'https://api.fantasypros.com/public/v2/json';
+const API_ROOT = 'https://api.fantasypros.com/v2/json';
 const POSITIONS = new Set(['QB', 'RB', 'WR', 'TE', 'K', 'DST']);
 
 type JsonRecord = Record<string, unknown>;
