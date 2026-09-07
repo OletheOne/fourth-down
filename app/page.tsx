@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useState, useRef, type ReactNode } from 'react';
 import { ArrowRight, BrainCircuit, Check, ChevronRight, Database, ExternalLink, Link2, RefreshCw, RotateCcw, Search, Upload } from 'lucide-react';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -9,7 +9,9 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { demoPlayers, type DraftedPlayer, type LeagueSettings, parsePlayerCsv, type Player, rankAvailable } from '@/lib/draft';
+import { demoPlayers, type DraftedPlayer, type LeagueSettings, parsePlayerCsv, type Player } from '@/lib/draft';
+import { normalizeSettings, type DraftAnalysis, nameKey, keeperCost, resolveKeeperContracts } from '@/lib/optimizer';
+import { EngineSettings, PlayerRiskEditor } from '@/components/engine-settings';
 
 const defaultSettings: LeagueSettings = {
   userTeam: 'Team 6', draftSlot: 6, scoring: 'ppr', mode: 'balanced',
@@ -27,15 +29,19 @@ type LeagueSnapshot = {
   myTeam?: string;
   scoring?: string;
   starters?: Partial<LeagueSettings['starters']>;
+  optimizerSettings?: Partial<LeagueSettings>;
   keepers?: Array<{ playerName: string; owner: string; originalRound?: number; seasonsKept?: number; costRound?: number }>;
   picks?: Array<{ playerName: string; owner: string; pick?: number }>;
   rosters?: Array<{ team: string; players: string[] }>;
+  rostersAreCurrentDraft?: boolean;
   updatedAt?: string;
 };
 type SavedState = {
   players: Player[]; drafted: DraftedPlayer[]; settings: LeagueSettings; teams?: string[]; espnLeagueId?: string; espnSeason?: number;
   dataSource?: DataSource; lastFantasyProsSync?: string; leagueSource?: LeagueSource; leagueSnapshotUpdatedAt?: string;
   leagueRosters?: Array<{ team: string; players: string[] }>; espnLeagueName?: string; draftMode?: DraftMode;
+  dataWarnings?: string[];
+  rostersAreCurrentDraft?: boolean;
 };
 
 export default function Home() {
@@ -50,6 +56,7 @@ export default function Home() {
   const [leagueSource, setLeagueSource] = useState<LeagueSource>('manual');
   const [leagueSnapshotUpdatedAt, setLeagueSnapshotUpdatedAt] = useState('');
   const [leagueRosters, setLeagueRosters] = useState<Array<{ team: string; players: string[] }>>([]);
+  const [rostersAreCurrentDraft,setRostersAreCurrentDraft]=useState(false);
   const [leagueSnapshotText, setLeagueSnapshotText] = useState('');
   const [dataSource, setDataSource] = useState<DataSource>('demo');
   const [lastFantasyProsSync, setLastFantasyProsSync] = useState('');
@@ -61,6 +68,11 @@ export default function Home() {
   const [bulkPicksText, setBulkPicksText] = useState('');
   const [csvText, setCsvText] = useState('');
   const [notice, setNotice] = useState('');
+  const [dataWarnings, setDataWarnings] = useState<string[]>([]);
+  const [analysis, setAnalysis] = useState<DraftAnalysis | null>(null);
+  const [analyzing, setAnalyzing] = useState(false);
+  const [analysisError, setAnalysisError] = useState('');
+  const syncGeneration = useRef(0);
   const [hydrated, setHydrated] = useState(false);
   const [draftMode, setDraftMode] = useState<DraftMode>('keeper');
   const [profiles, setProfiles] = useState<LeagueProfile[]>([{ id: 'discord-league', name: 'Discord League' }]);
@@ -85,22 +97,35 @@ export default function Home() {
     localStorage.setItem(`fourth-down-profile:${activeProfileId}`, JSON.stringify(currentSavedState()));
     localStorage.setItem('fourth-down-profiles', JSON.stringify(profiles));
     localStorage.setItem('fourth-down-active-profile', activeProfileId);
-  }, [players, drafted, settings, teams, espnLeagueId, espnSeason, dataSource, lastFantasyProsSync, leagueSource, leagueSnapshotUpdatedAt, leagueRosters, espnLeagueName, draftMode, profiles, activeProfileId, hydrated]);
+  }, [players, drafted, settings, teams, espnLeagueId, espnSeason, dataSource, lastFantasyProsSync, leagueSource, leagueSnapshotUpdatedAt, leagueRosters, espnLeagueName, draftMode, profiles, activeProfileId, hydrated, dataWarnings, rostersAreCurrentDraft]);
 
   useEffect(() => {
-    if (!hydrated || dataSource !== 'fantasypros' || !lastFantasyProsSync) return;
-    if (Date.now() - new Date(lastFantasyProsSync).getTime() > 6 * 60 * 60 * 1000) void syncFantasyPros(true);
-    // The refresh is intentionally evaluated only when saved state finishes loading.
+    syncGeneration.current += 1;
+    if (!hydrated || dataSource !== 'fantasypros') return;
+    // Refresh rankings for scoring/profile/season changes; stat totals alone do not update ECR.
+    void syncFantasyPros(true);
+    const timer=window.setInterval(()=>void syncFantasyPros(true),15*60*1000);
+    return ()=>{window.clearInterval(timer);syncGeneration.current+=1;};
+    // syncFantasyPros intentionally uses the snapshot at this profile/scoring boundary.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated]);
+  }, [hydrated, activeProfileId, settings.scoring, espnSeason, dataSource]);
 
   const allKeepers = drafted.filter((entry) => entry.kind === 'keeper');
   const draftPicks = drafted.filter((entry) => entry.kind === 'draft');
   const keepers = draftMode === 'keeper' ? allKeepers : [];
   const activeDrafted = draftMode === 'keeper' ? drafted : draftPicks;
-  const available = useMemo(() => players.filter((player) => !activeDrafted.some((entry) => entry.playerId === player.id || entry.playerName?.toLowerCase() === player.name.toLowerCase())), [players, activeDrafted]);
+  const available = useMemo(() => players.filter((player) => player.active !== false && !activeDrafted.some((entry) => entry.playerId === player.id || nameKey(entry.playerName) === nameKey(player.name)) && !(rostersAreCurrentDraft&&leagueRosters.some(r=>r.players.some(n=>nameKey(n)===nameKey(player.name))))), [players, activeDrafted,rostersAreCurrentDraft,leagueRosters]);
   const pricedKeepers = allKeepers.filter((entry) => entry.costRound).length;
-  const recommendations = useMemo(() => rankAvailable(players, activeDrafted, settings, teams), [players, activeDrafted, settings, teams]);
+  useEffect(() => {
+    if (!hydrated) return;
+    setAnalyzing(true); setAnalysis(null); setAnalysisError('');
+    const worker = new Worker(new URL('../lib/draft.worker.ts', import.meta.url), { type: 'module' });
+    worker.onmessage = event => { setAnalyzing(false); if (event.data.error) setAnalysisError(event.data.error); else setAnalysis(event.data.analysis); };
+    worker.onerror = () => { setAnalyzing(false); setAnalysisError('Analysis could not run. Refresh the page; your saved picks are retained.'); };
+    worker.postMessage({players, drafted, settings, teams, context:{draftMode,season:espnSeason,dataSource,lastSync:lastFantasyProsSync,warnings:dataWarnings,rosters:leagueRosters,rostersAreCurrentDraft}});
+    return () => worker.terminate();
+  }, [hydrated, players, drafted, settings, teams, draftMode, espnSeason, dataSource, lastFantasyProsSync, dataWarnings,leagueRosters,rostersAreCurrentDraft]);
+  const recommendations = analysis?.recommendations ?? [];
   const best = recommendations[0];
   const currentPick = nextOpenDraftPick(draftPicks, keepers, teams);
   const currentOwner = ownerForPick(currentPick, teams);
@@ -125,7 +150,7 @@ export default function Home() {
       description: 'Return the best available pick and decision signals after all currently recorded keepers and draft picks.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       annotations: { readOnlyHint: true, untrustedContentHint: false },
-      execute: () => best ? { pick: currentPick, player: best.name, position: best.pos, team: best.team, score: Number(best.score.toFixed(1)), signals: best.components, rationale: best.rationale } : { pick: currentPick, player: null },
+      execute: () => ({ analyzing, error: analysisError || undefined, analysis, pick: currentPick, best: best ?? null }),
     });
     register({
       name: 'read_draft_state', title: 'Read complete draft state',
@@ -137,7 +162,7 @@ export default function Home() {
         currentPick, currentOwner, isMyPick,
           keepers: keepers.map((entry) => ({ player: entry.playerName ?? players.find((player) => player.id === entry.playerId)?.name ?? entry.playerId, owner: entry.owner, originalRound: entry.originalRound, seasonsKept: entry.seasonsKept, costRound: entry.costRound })),
         picks: draftPicks.map((entry) => ({ pick: entry.pick, player: entry.playerName ?? players.find((player) => player.id === entry.playerId)?.name ?? entry.playerId, owner: entry.owner })),
-        rosters: leagueRosters,
+        rosters: leagueRosters, analysis, analyzing, analysisError,
         recommendations: recommendations.slice(0, 5).map((player) => ({ player: player.name, position: player.pos, team: player.team, score: Number(player.score.toFixed(1)), signals: player.components, rationale: player.rationale })),
       }),
     });
@@ -171,10 +196,10 @@ export default function Home() {
           const player = players.find((candidate) => candidate.name.toLowerCase() === playerName.toLowerCase());
           const originalRound = validRound(keeper.originalRound);
           const seasonsKept = validCount(keeper.seasonsKept) ?? (originalRound ? 1 : undefined);
-          const costRound = validRound(keeper.costRound) ?? (originalRound ? Math.max(1, originalRound - (seasonsKept ?? 1)) : undefined);
+          const costRound = validRound(keeper.costRound) ?? keeperCost(originalRound,seasonsKept,settings);
           return { playerId: player?.id ?? `external-${playerName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-keeper-${index + 1}`, playerName: player?.name ?? playerName, owner: keeper.owner, pick: index + 1, kind: 'keeper' as const, originalRound, seasonsKept, costRound };
         });
-        const resolved = resolveKeeperRoundCollisions(additions);
+        const resolved = resolveKeeperContracts(additions,settings,teams);
         setDrafted((entries) => [...entries.filter((entry) => entry.kind !== 'keeper'), ...resolved]);
         setNotice(`Added ${additions.length} keepers.`);
         return { loaded: resolved.length, keepers: resolved.map((keeper) => ({ playerName: keeper.playerName, owner: keeper.owner, costRound: keeper.costRound })) };
@@ -187,6 +212,8 @@ export default function Home() {
         type: 'object',
         properties: {
           leagueName: { type: 'string' }, season: { type: 'number' }, myTeam: { type: 'string' }, scoring: { type: 'string' }, updatedAt: { type: 'string' },
+          rostersAreCurrentDraft: { type: 'boolean' },
+          optimizerSettings: { type:'object', properties:{bench:{type:'number'},superflex:{type:'number'},customScoring:{type:'object',additionalProperties:{type:'number'}},positionScoring:{type:'object',additionalProperties:{type:'object',additionalProperties:{type:'number'}}},positionLimits:{type:'object',additionalProperties:{type:'number'}},keeperRules:{type:'object',properties:{limit:{type:'number'},escalation:{type:'number'},horizon:{type:'number'},discount:{type:'number'},firstRound:{type:'string',enum:['ineligible','round-one']},collision:{type:'string',enum:['earlier','reject']}},additionalProperties:false}},additionalProperties:false},
           teams: { type: 'array', minItems: 2, maxItems: 32, items: { anyOf: [{ type: 'string' }, { type: 'object', properties: { name: { type: 'string' }, isMine: { type: 'boolean' } }, required: ['name'], additionalProperties: false }] } },
           starters: { type: 'object', properties: { QB: { type: 'number' }, RB: { type: 'number' }, WR: { type: 'number' }, TE: { type: 'number' }, FLEX: { type: 'number' }, K: { type: 'number' }, DST: { type: 'number' } }, additionalProperties: false },
           keepers: { type: 'array', maxItems: 100, items: { type: 'object', properties: { playerName: { type: 'string' }, owner: { type: 'string' }, originalRound: { type: 'number' }, seasonsKept: { type: 'number' }, costRound: { type: 'number' } }, required: ['playerName', 'owner'], additionalProperties: false } },
@@ -218,13 +245,13 @@ export default function Home() {
           if (!contract) return keeper;
           const originalRound = validRound(contract.originalRound) ?? keeper.originalRound;
           const seasonsKept = validCount(contract.seasonsKept) ?? keeper.seasonsKept ?? (originalRound ? 1 : undefined);
-          const costRound = validRound(contract.costRound) ?? (originalRound ? Math.max(1, originalRound - (seasonsKept ?? 1)) : keeper.costRound);
+          const costRound = validRound(contract.costRound) ?? keeperCost(originalRound,seasonsKept,settings) ?? keeper.costRound;
           return { ...keeper, originalRound, seasonsKept, costRound };
         });
         values.contracts.forEach((contract) => {
-          if (typeof contract.playerName !== 'string' || !keepers.some((keeper) => keeper.playerName?.toLowerCase() === contract.playerName!.toLowerCase() && (typeof contract.owner !== 'string' || keeper.owner.toLowerCase() === contract.owner.toLowerCase()))) missing.push(String(contract.playerName ?? 'unnamed keeper'));
+          if (typeof contract.playerName !== 'string' || !keepers.some((keeper) => nameKey(keeper.playerName) === nameKey(String(contract.playerName)) && (typeof contract.owner !== 'string' || nameKey(keeper.owner) === nameKey(String(contract.owner))))) missing.push(String(contract.playerName ?? 'unnamed keeper'));
         });
-        const resolved = resolveKeeperRoundCollisions(next);
+        const resolved = resolveKeeperContracts(next,settings,teams);
         setDrafted((entries) => [...entries.filter((entry) => entry.kind !== 'keeper'), ...resolved]);
         const confirmed = resolved.filter((keeper) => keeper.costRound).length;
         setNotice(`Keeper costs updated: ${confirmed}/${resolved.length} confirmed.${missing.length ? ` No matching keeper: ${missing.join(', ')}.` : ''}`);
@@ -252,16 +279,17 @@ export default function Home() {
       },
     });
     return () => lifecycle.abort();
-  }, [activeProfile?.name, available, best, currentPick, currentOwner, draftMode, draftPicks, espnLeagueName, isMyPick, keepers, leagueRosters, leagueSnapshotUpdatedAt, leagueSource, players, recommendations, settings, teams]);
+  }, [activeProfile?.name, available, best, currentPick, currentOwner, draftMode, draftPicks, espnLeagueName, isMyPick, keepers, leagueRosters, leagueSnapshotUpdatedAt, leagueSource, players, recommendations, settings, teams, analysis, analyzing, analysisError]);
 
   function currentSavedState(): SavedState {
-    return { players, drafted, settings, teams, espnLeagueId, espnSeason, dataSource, lastFantasyProsSync, leagueSource, leagueSnapshotUpdatedAt, leagueRosters, espnLeagueName, draftMode };
+    return { players, drafted, settings, teams, espnLeagueId, espnSeason, dataSource, lastFantasyProsSync, leagueSource, leagueSnapshotUpdatedAt, leagueRosters, espnLeagueName, draftMode, dataWarnings,rostersAreCurrentDraft };
   }
 
   function loadSavedState(saved: SavedState) {
+    setFantasyProsSyncing(false);setAnalysis(null);setAnalyzing(false);setAnalysisError('');
     setPlayers(saved.players?.length ? saved.players : demoPlayers);
     setDrafted(saved.drafted ?? []);
-    setSettings(saved.settings ?? defaultSettings);
+    setSettings(normalizeSettings(saved.settings ?? defaultSettings)); setDataWarnings(saved.dataWarnings ?? []);setRostersAreCurrentDraft(saved.rostersAreCurrentDraft??false);
     setTeams(saved.teams?.length ? saved.teams : defaultTeams);
     setEspnLeagueId(saved.espnLeagueId ?? ''); setEspnSeason(saved.espnSeason ?? new Date().getFullYear());
     setDataSource(saved.dataSource ?? 'demo'); setLastFantasyProsSync(saved.lastFantasyProsSync ?? '');
@@ -315,13 +343,13 @@ export default function Home() {
       const owner = parts.length > 1 ? parts[0] : teams[Math.floor(index / 3)] ?? teams[teams.length - 1];
       const originalRound = validRound(parts[2]);
       const seasonsKept = validCount(parts[3]) ?? (originalRound ? 1 : undefined);
-      const costRound = originalRound ? Math.max(1, originalRound - (seasonsKept ?? 1)) : undefined;
+      const costRound = keeperCost(originalRound,seasonsKept,settings);
       const player = players.find((candidate) => candidate.name.toLowerCase() === playerName.toLowerCase());
       if (!player) missing.push(playerName);
       additions.push({ playerId: player?.id ?? `external-${playerName.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-keeper-${index + 1}`, playerName: player?.name ?? playerName, owner, pick: index + 1, kind: 'keeper', originalRound, seasonsKept, costRound });
     });
     try {
-      const resolved = resolveKeeperRoundCollisions(additions);
+      const resolved = resolveKeeperContracts(additions,settings,teams);
       setDrafted((entries) => [...entries.filter((entry) => entry.kind !== 'keeper'), ...resolved]);
       const moved = resolved.filter((entry, index) => entry.costRound !== additions[index].costRound).length;
       const pending = resolved.filter((entry) => !entry.costRound).length;
@@ -385,21 +413,22 @@ export default function Home() {
       if (!player) missing.push(name);
       const originalRound = kind === 'keeper' ? validRound(item.originalRound) : undefined;
       const seasonsKept = kind === 'keeper' ? validCount(item.seasonsKept) ?? (originalRound ? 1 : undefined) : undefined;
-      const costRound = kind === 'keeper' ? validRound(item.costRound) ?? (originalRound ? Math.max(1, originalRound - (seasonsKept ?? 1)) : undefined) : undefined;
+      const costRound = kind === 'keeper' ? validRound(item.costRound) ?? keeperCost(originalRound,seasonsKept,{...settings,...snapshot.optimizerSettings}) : undefined;
       return { playerId: player?.id ?? `external-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${kind}-${pick}`, playerName: player?.name ?? name, owner, pick, kind, originalRound, seasonsKept, costRound };
     };
-    const nextKeepers = resolveKeeperRoundCollisions((snapshot.keepers ?? []).map((keeper, index) => makeEntry(keeper, index + 1, 'keeper')));
+    const nextKeepers = resolveKeeperContracts((snapshot.keepers ?? []).map((keeper, index) => makeEntry(keeper, index + 1, 'keeper')), {...settings,...snapshot.optimizerSettings},syncedTeams);
     const nextPicks = (snapshot.picks ?? []).map((pick, index) => makeEntry(pick, pick.pick && pick.pick > 0 ? Math.round(pick.pick) : index + 1, 'draft')).sort((a, b) => a.pick - b.pick);
     const effectiveKeepers = snapshot.keepers ? nextKeepers : keepers;
     const effectivePicks = snapshot.picks ? nextPicks : draftPicks;
     setTeams(syncedTeams);
-    setSettings((current) => ({ ...current, scoring, starters, userTeam: syncedTeams.includes(myTeam) ? myTeam : current.userTeam, draftSlot: syncedTeams.includes(myTeam) ? syncedTeams.indexOf(myTeam) + 1 : current.draftSlot }));
+    setSettings((current) => normalizeSettings({ ...current, ...snapshot.optimizerSettings, scoring, starters, rulesConfirmed:false, userTeam: syncedTeams.includes(myTeam) ? myTeam : syncedTeams[0], draftSlot: syncedTeams.includes(myTeam) ? syncedTeams.indexOf(myTeam) + 1 : 1 }));
     setSelectedOwner(ownerForPick(nextOpenDraftPick(effectivePicks, effectiveKeepers, syncedTeams), syncedTeams));
     setDrafted((current) => [
       ...(snapshot.keepers ? nextKeepers : current.filter((entry) => entry.kind === 'keeper')),
       ...(snapshot.picks ? nextPicks : current.filter((entry) => entry.kind === 'draft')),
     ]);
     setLeagueRosters(Array.isArray(snapshot.rosters) ? snapshot.rosters.filter((roster) => roster?.team && Array.isArray(roster.players)) : []);
+    setRostersAreCurrentDraft(snapshot.rostersAreCurrentDraft??false);
     setEspnLeagueName(snapshot.leagueName?.trim() || espnLeagueName || 'FantasyPros league');
     if (snapshot.season && Number.isInteger(snapshot.season)) setEspnSeason(snapshot.season);
     setLeagueSource(source);
@@ -417,12 +446,14 @@ export default function Home() {
   }
 
   async function syncFantasyPros(silent = false) {
+    const generation=++syncGeneration.current;
     setFantasyProsSyncing(true);
     if (!silent) setNotice('Refreshing FantasyPros rankings, projections, ADP, and injuries…');
     const scoring = settings.scoring === 'half-ppr' ? 'HALF' : settings.scoring === 'ppr' ? 'PPR' : 'STD';
     try {
       const response = await fetch(`/api/fantasypros?season=${espnSeason}&scoring=${scoring}`, { cache: 'no-store' });
       const data = await response.json() as { code?: string; error?: string; players?: Player[]; updatedAt?: string; warnings?: string[] };
+      if(generation!==syncGeneration.current)return;
       if (!response.ok || data.error) {
         if (data.code === 'sample_access') {
           if (players.length < 100) { setPlayers(demoPlayers); setDataSource('demo'); setLastFantasyProsSync(''); }
@@ -434,20 +465,20 @@ export default function Home() {
       if (!data.players?.length) throw new Error('FantasyPros returned no draftable players.');
 
       const oldPlayers = new Map(players.map((player) => [player.id, player]));
-      const nextByName = new Map(data.players.map((player) => [player.name.toLowerCase(), player]));
+      const nextByName = new Map(data.players.map((player) => [nameKey(player.name), player]));
       setDrafted((entries) => entries.map((entry) => {
         const previousPlayer = oldPlayers.get(entry.playerId);
-        const replacement = nextByName.get((entry.playerName ?? previousPlayer?.name ?? '').toLowerCase());
+        const replacement = nextByName.get(nameKey(entry.playerName ?? previousPlayer?.name ?? ''));
         return replacement ? { ...entry, playerId: replacement.id, playerName: replacement.name } : entry;
       }));
-      setPlayers(data.players);
+      setPlayers(current=>{const riskByName=new Map(current.filter(p=>p.risk).map(p=>[nameKey(p.name),p.risk]));return data.players!.map(p=>({...p,risk:riskByName.get(nameKey(p.name))}));}); setDataWarnings(data.warnings ?? []);
       setDataSource('fantasypros');
       setLastFantasyProsSync(data.updatedAt ?? new Date().toISOString());
       setNotice(`FantasyPros loaded ${data.players.length} players.${data.warnings?.length ? ` ${data.warnings.join(' ')}` : ''}`);
     } catch (error) {
-      if (!silent) setNotice(error instanceof Error ? error.message : 'Could not refresh FantasyPros.');
+      if(generation===syncGeneration.current){const message=error instanceof Error?error.message:'Could not refresh FantasyPros.';setNotice(message);setDataWarnings([`Refresh failed: ${message} Saved data retained.`]);}
     } finally {
-      setFantasyProsSyncing(false);
+      if(generation===syncGeneration.current)setFantasyProsSyncing(false);
     }
   }
 
@@ -529,25 +560,37 @@ export default function Home() {
           <div className="overflow-hidden rounded-2xl border bg-card shadow-sm">
             <div className="grid bg-[#10271b] text-white md:grid-cols-[1.25fr_.75fr]">
               <div className="p-6 sm:p-8">
-                <div className="mb-5 flex items-center gap-2 text-xs font-semibold uppercase tracking-[.16em] text-[#d7ff45]"><span className="size-2 animate-pulse rounded-full bg-[#d7ff45]" /> Best pick right now</div>
+                <div className="mb-5 flex items-center gap-2 text-xs font-semibold uppercase tracking-[.16em] text-[#d7ff45]"><span className="size-2 animate-pulse rounded-full bg-[#d7ff45]" /> {analyzing ? 'Simulating your draft…' : isMyPick ? 'Best pick on your clock' : 'Plan for your upcoming pick'}</div>
                 {best ? <>
                   <div className="mb-3 flex flex-wrap items-end gap-3"><h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">{best.name}</h1><Badge className="mb-1 bg-white/10 text-white">{best.pos} · {best.team}</Badge></div>
                   <p className="max-w-2xl text-base leading-relaxed text-white/67">{best.rationale.join('. ')}.</p>
-                  <div className="mt-6 flex flex-wrap gap-3"><Button className="h-10 bg-[#d7ff45] px-4 text-[#0a1510] hover:bg-[#c8ef3e]" onClick={() => { setSelectedPlayer(best.id); setPlayerQuery(best.name); setSelectedOwner(settings.userTeam); }}>Queue for my team <ArrowRight /></Button><span className="self-center text-sm text-white/50">Composite score {best.score.toFixed(1)}</span></div>
-                </> : <h1 className="text-3xl font-semibold">Import a player pool to begin</h1>}
+                  <div className="mt-6 flex flex-wrap gap-3"><Button className="h-10 bg-[#d7ff45] px-4 text-[#0a1510] hover:bg-[#c8ef3e]" onClick={() => { setSelectedPlayer(best.id); setPlayerQuery(best.name); setSelectedOwner(settings.userTeam); }}>Queue for my team <ArrowRight /></Button><span className="self-center text-sm text-white/70">{best.confidence} confidence · model value {best.score.toFixed(1)}</span></div>
+                </> : <h1 className="text-2xl font-semibold">{analyzing ? 'Comparing completed rosters and next-turn options' : analysisError || 'No eligible recommendation. Review data and league rules below.'}</h1>}
               </div>
               {best && <div className="border-t border-white/10 bg-black/10 p-6 md:border-l md:border-t-0 sm:p-8">
                 <p className="mb-4 text-xs font-semibold uppercase tracking-[.13em] text-white/45">Decision signals</p>
-                <Signal label="Win now" value={best.components.winNow} /><Signal label="Dynasty" value={best.components.dynasty} /><Signal label="Scarcity" value={best.components.scarcity} /><Signal label="Roster fit" value={best.components.rosterFit} /><Signal label="Take now" value={best.components.urgency} />
+                <dl className="space-y-3 text-sm"><div><dt className="text-white/60">Roster improvement now</dt><dd className="text-lg">+{best.marginalPoints.toFixed(1)} model points</dd></div><div><dt className="text-white/60">Position replacement projection</dt><dd>{best.replacementPoints.toFixed(1)} points</dd></div><div><dt className="text-white/60">Available next turn (model only)</dt><dd>{best.nextPick ? `${Math.round(best.survival*100)}% · pick ${best.nextPick}` : 'No later pick'}</dd></div>{draftMode==='keeper'&&<div><dt className="text-white/60">Keeper portfolio option value</dt><dd>{best.keeperValue.toFixed(1)} · {best.nextKeeperRound?`next year R${best.nextKeeperRound}`:'not eligible next year'}</dd></div>}</dl>
               </div>}
             </div>
           </div>
 
+          <section className="rounded-2xl border bg-card p-5 space-y-3" aria-live="polite">
+            <h2 className="text-lg font-semibold">Decision audit</h2>
+            <p className="text-sm">{analysis?.comparison ?? (analyzing?'Recalculating after your latest change.':'A comparison appears when analysis is ready.')}</p>
+            {best&&<p className="text-sm">{best.baseline?'Conservative baseline selected: no alternative clears the simulation-noise threshold.':`Conservative simulated edge over the immediate roster-value baseline: ${best.conservativeEdge?.toFixed(1)} points.`} Ranking uses the conservative edge; raw model values can be higher for uncertain alternatives.</p>}
+            {analysis&&<p className="text-sm text-muted-foreground">{analysis.candidateCount} shortlisted choices · {analysis.simulations} shared draft scenarios per choice · full remaining-draft rollout. {analysis.eligible} players with usable projections; {analysis.excluded} excluded from recommendations. Open starting slots: {analysis.openSlots.join(', ')||'none'}.</p>}
+            {best&&<><p className="text-sm"><b>Example sequence:</b> {best.plan.join(' → ')}</p><p className="text-sm text-muted-foreground">Illustrative, not a promise of availability. Model value combines optimized starters, bye cover, bench insurance and (keeper mode only) discounted keeper options. It is not a win probability.</p><ul className="list-disc pl-5 text-sm space-y-1">{best.issues.map(issue=><li key={issue}>{issue}</li>)}</ul>{best.newsHeadline&&<div className="rounded-lg bg-secondary p-3 text-sm"><b>{best.newsHeadline}</b><p className="mt-1">{best.newsBody}</p><p className="mt-1 text-muted-foreground">{best.newsUpdatedAt?new Date(best.newsUpdatedAt).toLocaleString():'News date unavailable'} · availability/role flags influence uncertainty, not invented point deductions.</p></div>}
+              <PlayerRiskEditor key={best.id} player={best} onSave={risk=>setPlayers(ps=>ps.map(p=>p.id===best.id?{...p,risk}:p))}/></>}
+            {analysis?.warnings.map(w=><p key={w} className="rounded-md bg-amber-50 p-2 text-sm text-amber-950">{w}</p>)}
+            <details><summary className="cursor-pointer text-sm font-medium">How to interpret this model</summary><p className="mt-2 text-sm text-muted-foreground">Opponent choices use ADP dispersion, their own roster vacancies, position limits, and recent draft runs. Bench insurance assumes a 12% reserve option value with diminishing returns. Keeper future values use dynasty consensus as a proxy, not a forecast of future rankings. We do not apply a second age or PPR penalty/bonus. Historical outcome validation is not available; automated scenario tests check behavior, not guaranteed performance. Unsupported scoring and missing source timestamps remain explicit warnings.</p></details>
+            <details><summary className="cursor-pointer text-sm font-medium">Validation results & scope</summary><p className="mt-2 text-sm text-muted-foreground">96 synthetic first-pick regression cases, zero illegal completed rosters. The conservative model averaged 1,483 starter points versus 1,477 for ADP/positional value and 1,477 for expert rankings. The roughly 6-point difference is smaller than sampling uncertainty (about ±14): no meaningful advantage is established. This is not historical NFL validation. Supported draft: snake, traditional or round-cost keepers. Auction, traded-pick schedules, IDP and custom flex eligibility require additional support.</p></details>
+          </section>
+
           <div className="rounded-2xl border bg-card p-5 shadow-sm sm:p-6">
             <div className="mb-4 flex items-center justify-between"><div><h2 className="text-lg font-semibold">Next best options</h2><p className="text-sm text-muted-foreground">Re-ranked after every keeper and pick.</p></div><Badge variant="outline">{settings.mode}</Badge></div>
             <Table>
-              <TableHeader><TableRow><TableHead className="w-12">#</TableHead><TableHead>Player</TableHead><TableHead>Pos</TableHead><TableHead className="hidden sm:table-cell">Proj.</TableHead><TableHead className="hidden md:table-cell">ADP</TableHead><TableHead className="text-right">Score</TableHead></TableRow></TableHeader>
-              <TableBody>{recommendations.slice(0, 8).map((player, index) => <TableRow key={player.id} className="cursor-pointer" onClick={() => { setSelectedPlayer(player.id); setPlayerQuery(player.name); }}><TableCell className="font-mono text-muted-foreground">{index + 1}</TableCell><TableCell><div className="font-medium">{player.name}</div><div className="text-xs text-muted-foreground">Age {player.age} · Tier {player.tier}</div></TableCell><TableCell><PositionBadge pos={player.pos} /></TableCell><TableCell className="hidden sm:table-cell">{player.projectedPoints}</TableCell><TableCell className="hidden md:table-cell">{player.adp}</TableCell><TableCell className="text-right font-mono font-semibold">{player.score.toFixed(1)}</TableCell></TableRow>)}</TableBody>
+              <TableHeader><TableRow><TableHead className="w-12">#</TableHead><TableHead>Player / why</TableHead><TableHead>Pos</TableHead><TableHead className="hidden sm:table-cell">Proj.</TableHead><TableHead className="hidden md:table-cell">Lasts?</TableHead><TableHead className="text-right">Model value</TableHead></TableRow></TableHeader>
+              <TableBody>{recommendations.slice(0, 8).map((player, index) => <TableRow key={player.id} className="cursor-pointer" onClick={() => { setSelectedPlayer(player.id); setPlayerQuery(player.name); }}><TableCell className="font-mono text-muted-foreground">{index + 1}</TableCell><TableCell><div className="font-medium">{player.name}</div><div className="text-sm text-muted-foreground">+{player.marginalPoints.toFixed(1)} roster gain · next: {player.nextOption??'last pick'}</div><details onClick={e=>e.stopPropagation()}><summary className="text-sm cursor-pointer">Tradeoffs & data cautions</summary><p className="text-sm">{player.rationale.join('. ')}</p><p className="text-sm text-muted-foreground">{player.issues.join(' · ')}</p></details></TableCell><TableCell><PositionBadge pos={player.pos} /></TableCell><TableCell className="hidden sm:table-cell">{player.projectedValue.toFixed(1)}</TableCell><TableCell className="hidden md:table-cell">{player.nextPick?`${Math.round(player.survival*100)}%`:'—'}</TableCell><TableCell className="text-right font-mono font-semibold">{player.score.toFixed(1)}</TableCell></TableRow>)}</TableBody>
             </Table>
           </div>
         </section>
@@ -582,12 +625,13 @@ export default function Home() {
                 <p className="mt-2 text-xs text-muted-foreground">Keeper-cost selections are automatically skipped on the live draft clock. If two keepers collide in one round, the later entry moves to the nearest earlier round.</p>
               </TabsContent>
               <TabsContent value="setup" className="space-y-4 pt-4">
-                <Field label="Draft format"><Select value={draftMode} onValueChange={(value) => setDraftMode(value as DraftMode)}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="traditional">Traditional draft</SelectItem><SelectItem value="keeper">Keeper draft</SelectItem></SelectContent></Select></Field>
+                <Field label="Draft format"><Select value={draftMode} onValueChange={(value) => {setDraftMode(value as DraftMode);setSettings(s=>({...s,rulesConfirmed:false}));}}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="traditional">Traditional draft</SelectItem><SelectItem value="keeper">Keeper draft</SelectItem></SelectContent></Select></Field>
                 <div><p className="mb-1.5 text-sm font-medium">Add another league</p><div className="grid grid-cols-[1fr_auto] gap-2"><Input value={newProfileName} onChange={(event) => setNewProfileName(event.target.value)} placeholder="Mock Draft League" /><Button variant="secondary" onClick={createLeagueProfile} disabled={!newProfileName.trim()}>Create</Button></div><p className="mt-1.5 text-xs text-muted-foreground">Every league keeps its own settings, keepers, picks, and sync state.</p></div>
                 <Field label="My team"><Select value={settings.userTeam} onValueChange={(value) => { const team = value as string; setSettings({ ...settings, userTeam: team, draftSlot: teams.indexOf(team) + 1 }); }}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{teams.map((team) => <SelectItem key={team} value={team}>{team}</SelectItem>)}</SelectContent></Select></Field>
                 <Field label="Draft slot"><Select value={String(settings.draftSlot)} onValueChange={(value) => setSettings({ ...settings, draftSlot: Number(value), userTeam: teams[Number(value) - 1] ?? settings.userTeam })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{teams.map((_, index) => <SelectItem key={index + 1} value={String(index + 1)}>Slot {index + 1}</SelectItem>)}</SelectContent></Select></Field>
                 <Field label="Team direction"><Select value={settings.mode} onValueChange={(value) => setSettings({ ...settings, mode: value as LeagueSettings['mode'] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="contend">Contend now</SelectItem><SelectItem value="balanced">Balanced</SelectItem><SelectItem value="rebuild">Rebuild / youth</SelectItem></SelectContent></Select></Field>
-                <Field label="Scoring"><Select value={settings.scoring} onValueChange={(value) => setSettings({ ...settings, scoring: value as LeagueSettings['scoring'] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ppr">PPR</SelectItem><SelectItem value="half-ppr">Half PPR</SelectItem><SelectItem value="standard">Standard</SelectItem></SelectContent></Select></Field>
+                <Field label="Scoring"><Select value={settings.scoring} onValueChange={(value) => setSettings({ ...settings, rulesConfirmed:false, scoring: value as LeagueSettings['scoring'] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ppr">PPR</SelectItem><SelectItem value="half-ppr">Half PPR</SelectItem><SelectItem value="standard">Standard</SelectItem></SelectContent></Select></Field>
+                <EngineSettings settings={settings} onChange={setSettings} keeper={draftMode==='keeper'}/>
               </TabsContent>
               <TabsContent value="data" className="pt-4">
                 <div className="mb-4 rounded-xl border border-[#d7ff45]/50 bg-[#10271b] p-3 text-white">
@@ -595,7 +639,7 @@ export default function Home() {
                     <div className="flex items-center gap-2"><span className="grid size-7 place-items-center rounded-md bg-[#d7ff45] text-[#10271b]"><Database className="size-4" /></span><div><p className="text-sm font-semibold">FantasyPros intelligence</p><p className="text-xs text-white/55">{dataSource === 'fantasypros' && lastFantasyProsSync ? `Updated ${new Date(lastFantasyProsSync).toLocaleString()}` : 'Production player data source'}</p></div></div>
                     <Badge className={dataSource === 'fantasypros' ? 'bg-[#d7ff45] text-[#10271b]' : 'bg-white/10 text-white'}>{dataSource === 'fantasypros' ? 'Live' : 'Not loaded'}</Badge>
                   </div>
-                  <p className="mb-3 text-xs leading-relaxed text-white/65">Loads the complete player pool, projections, redraft and dynasty consensus, ADP, tiers, injuries, and news signals. Saved locally so your board remains available during the draft.</p>
+                  <p className="mb-3 text-sm leading-relaxed text-white/75">Loads current projections, rankings, consensus ADP, expert disagreement, injuries and recent news. Players without usable current projections stay out of recommendations. Refreshes every 15 minutes while open; saved locally for draft continuity.</p>
                   <Button className="w-full bg-[#d7ff45] text-[#10271b] hover:bg-[#c8ef3e]" onClick={() => void syncFantasyPros()} disabled={fantasyProsSyncing}>
                     <RefreshCw className={fantasyProsSyncing ? 'animate-spin' : ''} /> {fantasyProsSyncing ? 'Refreshing…' : dataSource === 'fantasypros' ? 'Refresh FantasyPros' : 'Load FantasyPros data'}
                   </Button>
@@ -607,6 +651,7 @@ export default function Home() {
                   <p className="mb-2 text-xs leading-relaxed text-muted-foreground">A connected assistant can send teams, settings, rosters, keepers, and picks from an ESPN league or mock draft into the active profile. Mock-board sync replaces only that profile’s picks.</p>
                   <a className="mb-3 inline-flex items-center gap-1 text-xs font-semibold underline underline-offset-2" href="https://support.fantasypros.com/hc/en-us/articles/55212611981851-How-do-I-connect-to-the-FantasyPros-MCP-Server" target="_blank" rel="noreferrer">Open official connection guide <ExternalLink className="size-3" /></a>
                   {leagueSource === 'fantasypros-mcp' && <div className="mb-3 rounded-md bg-emerald-50 px-2.5 py-2 text-xs text-emerald-900"><b>{espnLeagueName || 'FantasyPros league'}</b> · {teams.length} teams · {keepers.length} keepers{leagueSnapshotUpdatedAt ? ` · Updated ${new Date(leagueSnapshotUpdatedAt).toLocaleString()}` : ''}</div>}
+                  {leagueRosters.length>0&&<div className="mb-3 space-y-2 text-sm"><p>Are these synced rosters from the current draft? Previous-season rosters must not remove players from this year's pool.</p><Select value={rostersAreCurrentDraft?'current':'unconfirmed'} onValueChange={v=>setRostersAreCurrentDraft(v==='current')}><SelectTrigger className="w-full"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="unconfirmed">Unconfirmed / prior-season roster</SelectItem><SelectItem value="current">Confirmed current draft rosters</SelectItem></SelectContent></Select></div>}
                   <Textarea className="min-h-24 resize-y font-mono text-xs" value={leagueSnapshotText} onChange={(event) => setLeagueSnapshotText(event.target.value)} placeholder={'Optional fallback: paste a JSON league snapshot\n{"teams":["Team 1","Team 2"],"myTeam":"Team 1","keepers":[]}'} />
                   <Button className="mt-2 w-full" variant="secondary" onClick={importLeagueSnapshot} disabled={!leagueSnapshotText.trim()}><Upload /> Load league snapshot</Button>
                   <p className="mt-2 text-xs leading-relaxed text-muted-foreground">Fourth Down stores the snapshot only in this browser. It never receives your ESPN username, password, cookies, or FantasyPros OAuth tokens.</p>
@@ -620,9 +665,6 @@ export default function Home() {
   );
 }
 
-function Signal({ label, value }: { label: string; value: number }) {
-  return <div className="mb-3"><div className="mb-1.5 flex justify-between text-sm"><span className="text-white/65">{label}</span><span className="font-mono text-xs text-white/75">{Math.round(value)}</span></div><div className="h-1.5 overflow-hidden rounded-full bg-white/10"><div className="h-full rounded-full bg-[#d7ff45]" style={{ width: `${value}%` }} /></div></div>;
-}
 function PositionBadge({ pos }: { pos: string }) {
   const colors: Record<string, string> = { QB: 'bg-violet-100 text-violet-800', RB: 'bg-emerald-100 text-emerald-800', WR: 'bg-blue-100 text-blue-800', TE: 'bg-orange-100 text-orange-800', K: 'bg-slate-100 text-slate-700', DST: 'bg-rose-100 text-rose-800' };
   return <Badge className={colors[pos] ?? ''}>{pos}</Badge>;
@@ -645,19 +687,6 @@ function validRound(value: unknown) {
 function validCount(value: unknown) {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed >= 0 && parsed <= 30 ? parsed : undefined;
-}
-function resolveKeeperRoundCollisions(entries: DraftedPlayer[]) {
-  const usedByOwner = new Map<string, Set<number>>();
-  return entries.map((entry) => {
-    if (!entry.costRound) return entry;
-    const key = entry.owner.toLowerCase();
-    const used = usedByOwner.get(key) ?? new Set<number>();
-    let costRound = entry.costRound;
-    while (used.has(costRound) && costRound > 1) costRound -= 1;
-    if (used.has(costRound)) throw new Error(`${entry.owner} has more keeper costs than available rounds near round ${entry.costRound}. Enter an explicit valid cost for one of them.`);
-    used.add(costRound); usedByOwner.set(key, used);
-    return { ...entry, costRound };
-  });
 }
 function keeperBoardPick(entry: DraftedPlayer, teams: string[]) {
   if (!entry.costRound) return undefined;

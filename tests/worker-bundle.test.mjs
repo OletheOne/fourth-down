@@ -1,0 +1,11 @@
+import { readFile, readdir } from 'node:fs/promises';
+import vm from 'node:vm';
+import assert from 'node:assert/strict';
+const dir=new URL('../dist/client/_next/static/',import.meta.url);
+const file=(await readdir(dir)).find(n=>/^draft\.worker-.*\.js$/.test(n));assert.ok(file,'Production build must emit a separate analysis worker');
+const source=await readFile(new URL(file,dir),'utf8');let output;
+const self={postMessage(value){output=value;}};
+vm.runInNewContext(source,{self,console,Date,Map,Set,Math},{timeout:20000});
+self.onmessage({data:{players:[],drafted:[],teams:['A','B'],settings:{userTeam:'A',draftSlot:1,scoring:'ppr',mode:'contend',starters:{QB:1,RB:1,WR:1,TE:1,FLEX:1,K:0,DST:0}},context:{draftMode:'traditional'}}});
+assert.ok(output.analysis);assert.equal(output.analysis.version,'roster-lookahead-2');assert.ok(output.analysis.warnings.some(w=>w.includes('No players')));
+console.log('Production worker bundle message contract passed.');

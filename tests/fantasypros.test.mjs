@@ -19,9 +19,10 @@ if (process.argv.includes('--live')) {
   assert.ok(data.players.filter(p => p.consensusRank > 0 && p.consensusRank < 999).length >= 100);
 } else {
   process.env.FANTASYPROS_API_KEY = 'test-only-key';
-  const rows = Array.from({ length: 150 }, (_, i) => ({ player_id: i + 1, player_name: `Player ${i}`, position_id: 'WR', team_id: 'BUF', rank_ecr: i + 1, stats: { points_ppr: 200 } }));
+  const rows = Array.from({ length: 150 }, (_, i) => ({ player_id: i + 1, player_name: `Player ${i}`, position_id: 'WR', team_id: 'BUF', rank_ecr: i + 1, rank_ave:i+1.5,rank_std:3,rank_min:1,rank_max:9,player_bye_week:7, stats: { points:100,points_half:150,points_ppr: 200,rec:100 } }));
   let failRankings = false;
   let smallPool = false;
+  let failNews = false;
   globalThis.fetch = async (url, options) => {
     assert.ok(url.startsWith('https://api.fantasypros.com/public/v2/json/'));
     assert.equal(options.headers['x-api-key'], 'test-only-key');
@@ -29,11 +30,16 @@ if (process.argv.includes('--live')) {
       assert.equal(new URL(url).searchParams.get('week'), '0');
       if (failRankings) return Response.json({ message: 'Invalid Position' }, { status: 400 });
     }
+    if(url.includes('/injuries'))return Response.json({injuries:[{player_id:1,status:'IR'}]});
+    if(url.includes('/news'))return failNews?Response.json({}, {status:503}):Response.json({items:[{player_id:1,title:'Older',created:'2026-09-01 12:00:00'},{player_id:1,title:'Newest',created:'2026-09-06 12:00:00',impact:'Role update'}]});
     return Response.json({ players: smallPool ? rows.slice(0, 10) : rows });
   };
   const success = await GET(request());
   assert.equal(success.status, 200);
-  assert.equal((await success.json()).players[0].projectedPoints, 200);
+  const successData=await success.json();const first=successData.players[0];
+  assert.equal(first.projectedPoints, 200);
+  assert.equal(first.adp,1.5);assert.equal(first.adpSource,'average');assert.equal(first.rankStdDev,3);assert.equal(first.bye,7);assert.equal(first.injuryStatus,'IR');assert.equal(first.newsHeadline,'Newest');assert.equal(first.newsUpdatedAt,'2026-09-06T12:00:00.000Z');assert.deepEqual(first.pointsByScoring,{standard:100,'half-ppr':150,ppr:200});assert.equal(first.stats.rec,100);assert.equal(first.hasProjection,true);assert.equal(first.active,true);
+  failNews=true;const degraded=await GET(request());assert.equal(degraded.status,200);assert.match((await degraded.json()).warnings.join(' '),/News could not be refreshed/);failNews=false;
   failRankings = true;
   const failure = await GET(request());
   const failureBody = await failure.json();
@@ -45,5 +51,5 @@ if (process.argv.includes('--live')) {
   smallPool = true;
   const incomplete = await GET(request());
   assert.equal((await incomplete.json()).code, 'incomplete_data');
-  console.log('Passed: draft parameters, successful merge, upstream error classification, incomplete-data guard.');
+  console.log('Passed: draft parameters, average ADP, expert spread, injuries, newest news, timestamps, scoring totals, stat lines, optional-feed failure, upstream error classification, incomplete-data guard.');
 }
