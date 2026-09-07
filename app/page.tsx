@@ -13,6 +13,7 @@ import { demoPlayers, type DraftedPlayer, type LeagueSettings, parsePlayerCsv, t
 import { normalizeSettings, type DraftAnalysis, nameKey, keeperCost, resolveKeeperContracts } from '@/lib/optimizer';
 import { EngineSettings, PlayerRiskEditor } from '@/components/engine-settings';
 import { applyDiscordRules } from '@/lib/discord-rules';
+import DraftWorker from '../lib/draft.worker?worker';
 
 const defaultSettings: LeagueSettings = {
   userTeam: 'Team 6', draftSlot: 6, scoring: 'ppr', mode: 'balanced',
@@ -129,7 +130,9 @@ export default function Home() {
   useEffect(() => {
     if (!hydrated) return;
     setAnalyzing(true); setAnalysis(null); setAnalysisError('');
-    const worker = new Worker(new URL('../lib/draft.worker.ts', import.meta.url), { type: 'module' });
+    let worker: Worker;
+    try { worker = new DraftWorker(); }
+    catch { setAnalyzing(false); setAnalysisError('The recommendation worker could not start. Refresh the page; your saved picks are retained.'); return; }
     worker.onmessage = event => { setAnalyzing(false); if (event.data.error) setAnalysisError(event.data.error); else setAnalysis(event.data.analysis); };
     worker.onerror = () => { setAnalyzing(false); setAnalysisError('Analysis could not run. Refresh the page; your saved picks are retained.'); };
     worker.postMessage({players, drafted, settings, teams, context:{draftMode,season:espnSeason,dataSource,lastSync:lastFantasyProsSync,warnings:dataWarnings,rosters:leagueRosters,rostersAreCurrentDraft}});
