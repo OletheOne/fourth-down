@@ -19,6 +19,7 @@ import {requestSiteJson,SiteRequestError} from '@/lib/client-json';
 import {KeeperSetup,ConfirmedKeepers} from '@/components/keeper-preset';
 import {DecisionSummary,PlayerCautions} from '@/components/decision-summary';
 import {decisionNotes} from '@/lib/decision-copy';
+import {TeamRosters} from '@/components/team-rosters';
 
 const defaultSettings: LeagueSettings = {
   userTeam: 'Team 6', draftSlot: 6, scoring: 'ppr', mode: 'balanced',
@@ -655,7 +656,8 @@ export default function Home() {
 
           <div className="rounded-2xl border bg-card p-5 shadow-sm">
             <Tabs defaultValue="setup">
-              <TabsList className="grid w-full grid-cols-3"><TabsTrigger value="keepers">Keepers</TabsTrigger><TabsTrigger value="setup">Setup</TabsTrigger><TabsTrigger value="data">Data</TabsTrigger></TabsList>
+              <TabsList className="grid w-full grid-cols-4"><TabsTrigger value="rosters">Rosters</TabsTrigger><TabsTrigger value="keepers">Keepers</TabsTrigger><TabsTrigger value="setup">Setup</TabsTrigger><TabsTrigger value="data">Data</TabsTrigger></TabsList>
+              <TabsContent value="rosters" className="pt-4"><TeamRosters key={activeProfileId} teams={teams} drafted={activeDrafted} players={players} userTeam={settings.userTeam}/></TabsContent>
               <TabsContent value="keepers" className="pt-4">
                 {draftMode==='keeper'?<ConfirmedKeepers/>:<div className="space-y-3 text-sm"><p>Traditional drafts have no keepers. Your preconfigured Discord keeper draft is saved separately.</p><Button variant="secondary" onClick={()=>switchDraftMode('keeper')}>Open my keeper draft</Button></div>}
               </TabsContent>
