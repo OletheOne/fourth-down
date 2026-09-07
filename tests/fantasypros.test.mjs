@@ -52,5 +52,9 @@ if (process.argv.includes('--live')) {
   smallPool = true;
   const incomplete = await GET(request());
   assert.equal((await incomplete.json()).code, 'incomplete_data');
+  globalThis.fetch=async()=>new Response('<!DOCTYPE html><html>Gateway error</html>',{headers:{'Content-Type':'text/html'}});
+  const htmlFailure=await GET(request());assert.equal(htmlFailure.status,502);const htmlBody=await htmlFailure.json();assert.match(htmlBody.error,/non-JSON/);assert.doesNotMatch(htmlBody.error,/Unexpected token|<!DOCTYPE/);
+  globalThis.fetch=async()=>new Response('{broken',{headers:{'Content-Type':'application/json'}});
+  const brokenFailure=await GET(request());assert.equal(brokenFailure.status,502);assert.match((await brokenFailure.json()).error,/incomplete JSON/);
   console.log('Passed: draft parameters, average ADP, expert spread, injuries, newest news, timestamps, scoring totals, stat lines, optional-feed failure, upstream error classification, incomplete-data guard.');
 }
