@@ -204,7 +204,8 @@ export function keeperPortfolio(roster: EvaluatedPlayer[], contracts: Map<string
   };
   visit([],0);return best;
 }
-export function analyzeDraft(players: Player[], allDrafted: DraftedPlayer[], input: LeagueSettings, teams: string[], context: DraftContext = {}): DraftAnalysis {
+export type ReadyPick={player:EvaluatedPlayer;targetPick:number;marginalPoints:number;warnings:string[]};
+export function analyzeDraft(players: Player[], allDrafted: DraftedPlayer[], input: LeagueSettings, teams: string[], context: DraftContext = {},onPickReady?:(pick:ReadyPick)=>void): DraftAnalysis {
   const s = normalizeSettings(input); const keeperMode = context.draftMode === 'keeper';
   const warnings: string[] = [...(context.warnings ?? [])];
   const empty: DraftAnalysis = { recommendations: [], warnings, excluded: 0, eligible: 0, currentPick: 1, simulations: s.simulations!, candidateCount: 0, openSlots: [], version: ENGINE_VERSION };
@@ -263,25 +264,49 @@ export function analyzeDraft(players: Player[], allDrafted: DraftedPlayer[], inp
   for(const pos of POS) add(legal.filter(p=>p.pos===pos).sort((a,b)=>b.value-a.value).slice(0,1));
   if(keeperMode) add(legal.slice().sort((a,b)=>a.dynastyRank-b.dynastyRank).slice(0,3));
   const candidates=[...finalists.values()]; empty.candidateCount=candidates.length;
+  const baselineChoice=legal.slice().sort((a,b)=>(immediate.get(b.id)??0)-(immediate.get(a.id)??0)||market(a)-market(b))[0];
+  // In the default policy this exact candidate is always sorted first below.
+  // Publish it before auxiliary rollouts, without substituting a faster policy.
+  // Experimental ordering and any missing-shortlist edge case wait for completion.
+  if(s.recommendationPolicy!=='lookahead'&&baselineChoice&&finalists.has(baselineChoice.id))onPickReady?.({player:baselineChoice,targetPick:target,marginalPoints:immediate.get(baselineChoice.id)??0,warnings:[...warnings]});
   const seed=context.seed??20260906; const worlds=s.simulations!;
   const outcomes=new Map(candidates.map(p=>[p.id,[] as number[]])); const plans=new Map<string,string[]>();
   const survived=new Map(candidates.map(p=>[p.id,0])); const reached=new Map(candidates.map(p=>[p.id,0])); const nextOptions=new Map<string,string[]>();
   const marketOrder=available.slice().sort((a,b)=>market(a)-market(b));
   // Cache observable projection values across worlds; random outcomes are never inputs to decisions.
   const valueCache=new Map<string,number>();
+  // Legality depends on position counts, roster capacity and fixed league rules.
+  // Reuse that answer across identical roster shapes; player duplication is still
+  // checked separately. Caches live only for this analysis, so every real pick,
+  // settings change or refreshed projection starts with fresh state.
+  const legalityCache=new Map<string,boolean>();
+  const portfolioCache=new Map<string,number>();
+  const portfolioOf=(roster:EvaluatedPlayer[],cs:Map<string,number>)=>{
+    const key=JSON.stringify(roster.map(p=>[p.id,cs.get(p.id)]));
+    const cached=portfolioCache.get(key);if(cached!==undefined)return cached;
+    const value=keeperPortfolio(roster,cs,s,pool,teams.length);portfolioCache.set(key,value);return value;
+  };
   const runCounts: Partial<Record<Position,number>>={};
   for(const d of drafted.filter(d=>d.kind==='draft').sort((a,b)=>b.pick-a.pick).slice(0,teams.length)) {const p=idLookup.get(d.playerId)??names.get(nameKey(d.playerName));if(p)runCounts[p.pos]=(runCounts[p.pos]??0)+1;}
   for(let world=0;world<worlds;world++) {
     const worldSeed=seed+world*7919;
     const worldPlayers=new Map(pool.map(p=>[p.id,{...p,value:p.value*Math.max(.2,1+(random(worldSeed,p.id)-.5)*2*p.uncertainty)}]));
+    const noiseCache=new Map<string,number>();
     const valueOf=(roster:EvaluatedPlayer[])=>{const key=roster.map(p=>p.id).sort().join('|');const cached=valueCache.get(key);if(cached!==undefined)return cached;const value=rosterValue(roster,s,replacement);valueCache.set(key,value);return value;};
     const choose=(remaining:EvaluatedPlayer[],roster:EvaluatedPlayer[],pick:number,user:boolean) => {
       const short=remaining.slice(0,22); for(const pos of POS) { const p=remaining.find(p=>p.pos===pos);if(p&&!short.includes(p))short.push(p); }
       let best:EvaluatedPlayer|undefined; let high=-Infinity;
       const currentValue=user?valueOf(roster):0;
-      for(const p of short) {if(!canDraft(roster,p,s))continue; let score:number;
+      const shape=roster.map(p=>p.pos).sort().join(',');
+      const counts=new Map<Position,number>();for(const p of roster)counts.set(p.pos,(counts.get(p.pos)??0)+1);
+      for(const p of short) {
+        if(roster.some(q=>q.id===p.id))continue;
+        const legalityKey=shape+'|'+p.pos;
+        let allowed=legalityCache.get(legalityKey);
+        if(allowed===undefined){allowed=canDraft(roster,p,s);legalityCache.set(legalityKey,allowed);}
+        if(!allowed)continue; let score:number;
         if(user) score=valueOf([...roster,p])-currentValue;
-        else { const count=roster.filter(q=>q.pos===p.pos).length; const need=s.starters[p.pos]+(flex.has(p.pos)?s.starters.FLEX/3:0)+(p.pos==='QB'?(s.superflex??0):0); const spread=p.adpStdDev??Math.max(5,market(p)*.18); score=-market(p)+(count<need?12:count>=need+1?-20:0)+(random(worldSeed,`${pick}:${p.id}`)-.5)*spread*2+(runCounts[p.pos]??0)*.7; }
+        else { const count=counts.get(p.pos)??0; const need=s.starters[p.pos]+(flex.has(p.pos)?s.starters.FLEX/3:0)+(p.pos==='QB'?(s.superflex??0):0); const spread=p.adpStdDev??Math.max(5,market(p)*.18);const noiseKey=`${pick}:${p.id}`;let noise=noiseCache.get(noiseKey);if(noise===undefined){noise=(random(worldSeed,noiseKey)-.5)*spread*2;noiseCache.set(noiseKey,noise);} score=-market(p)+(count<need?12:count>=need+1?-20:0)+noise+(runCounts[p.pos]??0)*.7; }
         if(score>high){high=score;best=p;}
       } return best;
     };
@@ -306,7 +331,7 @@ export function analyzeDraft(players: Player[], allDrafted: DraftedPlayer[], inp
       // Draft choices only see projections. Outcome uncertainty is applied after the roster is complete.
       let value=rosterOutcomeValue(final,worldPlayers,s,replacement);
       // Keeper option value is evaluated on the completed portfolio, never added for every player independently.
-      if(keeperWeight)value+=keeperWeight*keeperPortfolio(final,cs,s,pool,teams.length);
+      if(keeperWeight)value+=keeperWeight*portfolioOf(final,cs);
       if(assignLineup(final,s).open.length)value-=assignLineup(final,s).open.length*50;
       outcomes.get(candidate.id)!.push(value);if(world===0)plans.set(candidate.id,plan);
       if(!chosenCandidate&&world===0)plans.set(candidate.id,['Conditional: player may be taken before your turn',...plan]);
@@ -326,7 +351,7 @@ export function analyzeDraft(players: Player[], allDrafted: DraftedPlayer[], inp
       rationale:[`${marginal.toFixed(1)} projected roster-value gain now, including lineup, bye coverage and depth`,...(p.bonusDetails??[]),next?`Model-only chance of lasting to pick ${next}: ${Math.round(survival*100)}%`:'Your final available selection',nextOption?`Example follow-up: ${nextOption}`:'No later pick modeled',...(keeperMode?[nextKeeperRound?`Next-year keeper cost R${nextKeeperRound}; ${keeperValue.toFixed(1)} discounted portfolio option value`:'Ineligible to keep next year under the configured round-one rule']:[])]};
   }).sort((a,b)=>b.score-a.score||a.id.localeCompare(b.id));
   // Do not let small, noisy rollout differences displace the roster-value baseline.
-  const baseline=legal.slice().sort((a,b)=>(immediate.get(b.id)??0)-(immediate.get(a.id)??0)||market(a)-market(b))[0];
+  const baseline=baselineChoice;
   const baselineRec=recommendations.find(p=>p.id===baseline?.id);
   if(baselineRec){baselineRec.baseline=true;const base=outcomes.get(baselineRec.id)!;
     for(const p of recommendations){const differences=outcomes.get(p.id)!.map((v,i)=>v-base[i]);const mean=differences.reduce((a,b)=>a+b,0)/worlds;const sd=Math.sqrt(differences.reduce((a,b)=>a+(b-mean)**2,0)/Math.max(1,worlds-1));p.conservativeEdge=mean-2*sd/Math.sqrt(worlds)-s.riskTolerance!*(p.spread-baselineRec.spread);}

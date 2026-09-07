@@ -10,7 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { demoPlayers, type DraftedPlayer, type LeagueSettings, parsePlayerCsv, type Player } from '@/lib/draft';
-import { normalizeSettings, type DraftAnalysis, nameKey, keeperCost, resolveKeeperContracts } from '@/lib/optimizer';
+import { normalizeSettings, type DraftAnalysis, type ReadyPick, nameKey, keeperCost, resolveKeeperContracts } from '@/lib/optimizer';
 import { EngineSettings, PlayerRiskEditor } from '@/components/engine-settings';
 import { prepareProfileState, validateKeeperSnapshot, KEEPER_PROFILE_ID, TRADITIONAL_PROFILE_ID, KEEPER_PRESET_REVISION, presetKeepers, presetPlayers, findKeeperPlayer, mergeKeeperPicks, identity } from '@/lib/keeper-preset';
 import DraftWorker from '../lib/draft.worker?worker&inline';
@@ -18,6 +18,7 @@ import {startAnalysis} from '@/lib/analysis-runner';
 import {requestSiteJson,SiteRequestError} from '@/lib/client-json';
 import {KeeperSetup,ConfirmedKeepers} from '@/components/keeper-preset';
 import {DecisionSummary,PlayerCautions} from '@/components/decision-summary';
+import {decisionNotes} from '@/lib/decision-copy';
 
 const defaultSettings: LeagueSettings = {
   userTeam: 'Team 6', draftSlot: 6, scoring: 'ppr', mode: 'balanced',
@@ -77,6 +78,7 @@ export default function Home() {
   const [notice, setNotice] = useState('');
   const [dataWarnings, setDataWarnings] = useState<string[]>([]);
   const [analysis, setAnalysis] = useState<DraftAnalysis | null>(null);
+  const [readyPick,setReadyPick]=useState<ReadyPick|null>(null);
   const [analyzing, setAnalyzing] = useState(false);
   const [analysisError, setAnalysisError] = useState('');
   const syncGeneration = useRef(0);
@@ -141,11 +143,12 @@ export default function Home() {
   const pricedKeepers = allKeepers.filter((entry) => entry.costRound).length;
   useEffect(() => {
     if (!hydrated) return;
-    setAnalyzing(true); setAnalysis(null); setAnalysisError('');
-    return startAnalysis({players,drafted,settings,teams,context:{draftMode,season:espnSeason,dataSource,lastSync:lastFantasyProsSync,warnings:dataWarnings,rosters:leagueRosters,rostersAreCurrentDraft}},()=>new DraftWorker(),result=>{setAnalyzing(false);setAnalysis(result);},error=>{setAnalyzing(false);setAnalysisError(error);});
+    setAnalyzing(true); setAnalysis(null);setReadyPick(null); setAnalysisError('');
+    return startAnalysis({players,drafted,settings,teams,context:{draftMode,season:espnSeason,dataSource,lastSync:lastFantasyProsSync,warnings:dataWarnings,rosters:leagueRosters,rostersAreCurrentDraft}},()=>new DraftWorker(),result=>{setAnalyzing(false);setAnalysis(result);setReadyPick(null);},error=>{setAnalyzing(false);setAnalysisError(error);setReadyPick(null);},setReadyPick);
   }, [hydrated, players, drafted, settings, teams, draftMode, espnSeason, dataSource, lastFantasyProsSync, dataWarnings,leagueRosters,rostersAreCurrentDraft]);
   const recommendations = analysis?.recommendations ?? [];
   const best = recommendations[0];
+  const displayPick=best??readyPick?.player;
   const currentPick = nextOpenDraftPick(draftPicks, keepers, teams);
   const currentOwner = ownerForPick(currentPick, teams);
   useEffect(()=>{if(draftMode==='keeper')setSelectedOwner(currentOwner);},[draftMode,currentOwner]);
@@ -170,7 +173,7 @@ export default function Home() {
       description: 'Return the best available pick and decision signals after all currently recorded keepers and draft picks.',
       inputSchema: { type: 'object', properties: {}, additionalProperties: false },
       annotations: { readOnlyHint: true, untrustedContentHint: false },
-      execute: () => ({ analyzing, error: analysisError || undefined, analysis, pick: currentPick, best: best ?? null }),
+      execute: () => ({ analyzing, error: analysisError || undefined, analysis, pick: currentPick, best: best ?? readyPick?.player ?? null,readyPick }),
     });
     register({
       name: 'read_draft_state', title: 'Read complete draft state',
@@ -303,7 +306,7 @@ export default function Home() {
       },
     });
     return () => lifecycle.abort();
-  }, [activeProfile?.name, available, best, currentPick, currentOwner, draftMode, draftPicks, espnLeagueName, isMyPick, keepers, leagueRosters, leagueSnapshotUpdatedAt, leagueSource, players, recommendations, settings, teams, analysis, analyzing, analysisError]);
+  }, [activeProfile?.name, available, best, readyPick, currentPick, currentOwner, draftMode, draftPicks, espnLeagueName, isMyPick, keepers, leagueRosters, leagueSnapshotUpdatedAt, leagueSource, players, recommendations, settings, teams, analysis, analyzing, analysisError]);
 
   function currentSavedState(): SavedState {
     return { players, drafted, settings, teams, espnLeagueId, espnSeason, dataSource, lastFantasyProsSync, leagueSource, leagueSnapshotUpdatedAt, leagueRosters, espnLeagueName, draftMode, dataWarnings,rostersAreCurrentDraft };
@@ -316,7 +319,7 @@ export default function Home() {
   function loadSavedState(input: SavedState,profileId=activeProfileId) {
     const base={...input,players:input.players?.length?input.players:demoPlayers,drafted:input.drafted??[],settings:input.settings??defaultSettings};
     const saved=prepareProfileState(base,profileId);
-    setFantasyProsSyncing(false);setRefreshNeedsSignIn(false);setAnalysis(null);setAnalyzing(false);setAnalysisError('');
+    setFantasyProsSyncing(false);setRefreshNeedsSignIn(false);setAnalysis(null);setReadyPick(null);setAnalyzing(false);setAnalysisError('');
     setPlayers(saved.players?.length ? saved.players : demoPlayers);
     setDrafted(saved.drafted ?? []);
     setSettings(normalizeSettings(saved.settings ?? defaultSettings)); setDataWarnings(saved.dataWarnings ?? []);setRostersAreCurrentDraft(saved.rostersAreCurrentDraft??false);
@@ -609,11 +612,12 @@ export default function Home() {
           <div className="overflow-hidden rounded-2xl border bg-card shadow-sm">
             <div className="grid bg-[#10271b] text-white md:grid-cols-[1.25fr_.75fr]">
               <div className="p-6 sm:p-8">
-                <div className="mb-5 flex items-center gap-2 text-xs font-semibold uppercase tracking-[.16em] text-[#d7ff45]"><span className="size-2 animate-pulse rounded-full bg-[#d7ff45]" /> {analyzing ? 'Simulating your draft…' : isMyPick ? 'Best pick on your clock' : 'Plan for your upcoming pick'}</div>
-                {best ? <>
-                  <div className="mb-3 flex flex-wrap items-end gap-3"><h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">{best.name}</h1><Badge className="mb-1 bg-white/10 text-white">{best.pos} · {best.team}</Badge></div>
-                  <p className="max-w-2xl text-base leading-relaxed text-white/75">{settings.recommendationPolicy==='lookahead'?'The experimental draft model favors this choice.':'The strongest projected roster improvement among the players available now.'} {!isMyPick&&`Target for pick ${analysis?.targetPick??'—'}, if still available. Rechecks after every recorded pick.`}</p>
-                  <div className="mt-6 flex flex-wrap gap-3"><Button className="h-10 bg-[#d7ff45] px-4 text-[#0a1510] hover:bg-[#c8ef3e]" onClick={() => { setSelectedPlayer(best.id); setPlayerQuery(best.name); setSelectedOwner(settings.userTeam); }}>Select for live entry <ArrowRight /></Button><span className="self-center text-sm text-white/70">Recommendation, not a guarantee</span></div>
+                <div className="mb-5 flex items-center gap-2 text-xs font-semibold uppercase tracking-[.16em] text-[#d7ff45]"><span className="size-2 animate-pulse rounded-full bg-[#d7ff45]" /> {readyPick?'Pick ready · supporting details calculating':analyzing ? 'Calculating your pick…' : isMyPick ? 'Best pick on your clock' : 'Plan for your upcoming pick'}</div>
+                {displayPick ? <>
+                  <div className="mb-3 flex flex-wrap items-end gap-3"><h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">{displayPick.name}</h1><Badge className="mb-1 bg-white/10 text-white">{displayPick.pos} · {displayPick.team}</Badge></div>
+                  <p className="max-w-2xl text-base leading-relaxed text-white/75">{settings.recommendationPolicy==='lookahead'?'The experimental draft model favors this choice.':'The strongest projected roster improvement among the players available now.'} {!isMyPick&&`Target for pick ${analysis?.targetPick??readyPick?.targetPick??'—'}, if still available. Rechecks after every recorded pick.`}</p>
+                  <div className="mt-6 flex flex-wrap gap-3"><Button className="h-10 bg-[#d7ff45] px-4 text-[#0a1510] hover:bg-[#c8ef3e]" onClick={() => { setSelectedPlayer(displayPick.id); setPlayerQuery(displayPick.name); setSelectedOwner(settings.userTeam); }}>Select for live entry <ArrowRight /></Button><span className="self-center text-sm text-white/70">Recommendation, not a guarantee</span></div>
+                  {readyPick&&<div className="mt-4 space-y-2">{decisionNotes([...readyPick.warnings,...readyPick.player.issues]).filter(n=>n.attention).map(n=><p key={n.text} className="rounded-md bg-amber-50 p-3 text-sm text-amber-950">{n.text}</p>)}</div>}
                 </> : <h1 className="text-2xl font-semibold">{analyzing ? 'Comparing completed rosters and next-turn options' : analysisError || 'No eligible recommendation. Review data and league rules below.'}</h1>}
               </div>
               {best && <div className="border-t border-white/10 bg-black/10 p-6 md:border-l md:border-t-0 sm:p-8">

@@ -1,4 +1,4 @@
-import {analyzeDraft,type DraftAnalysis} from './optimizer';
+import {analyzeDraft,type DraftAnalysis,type ReadyPick} from './optimizer';
 
 type WorkerLike=Pick<Worker,'postMessage'|'terminate'|'onmessage'|'onerror'|'onmessageerror'>;
 type Input={players:Parameters<typeof analyzeDraft>[0];drafted:Parameters<typeof analyzeDraft>[1];settings:Parameters<typeof analyzeDraft>[2];teams:Parameters<typeof analyzeDraft>[3];context:Parameters<typeof analyzeDraft>[4]};
@@ -6,7 +6,7 @@ type Input={players:Parameters<typeof analyzeDraft>[0];drafted:Parameters<typeof
 // Inline workers avoid an authenticated HTTP request for a second script.
 // If the browser disallows workers, use the already-bundled engine, not another
 // network import. No fallback ever changes the model or the saved draft.
-export function startAnalysis(input:Input,createWorker:()=>WorkerLike,onResult:(value:DraftAnalysis)=>void,onError:(message:string)=>void){
+export function startAnalysis(input:Input,createWorker:()=>WorkerLike,onResult:(value:DraftAnalysis)=>void,onError:(message:string)=>void,onPickReady?:(pick:ReadyPick)=>void){
  let cancelled=false,fallingBack=false,worker:WorkerLike|undefined;
  let fallbackTimer:ReturnType<typeof setTimeout>|undefined;
  let watchdog:ReturnType<typeof setTimeout>|undefined;
@@ -20,6 +20,7 @@ export function startAnalysis(input:Input,createWorker:()=>WorkerLike,onResult:(
   worker=createWorker();
   worker.onmessage=event=>{
    if(cancelled||fallingBack)return;
+   if(event.data?.pickReady){onPickReady?.(event.data.pickReady);return;}
    if(!event.data?.analysis){fallback();return;}
    clearTimeout(watchdog);worker?.terminate();finish(event.data.analysis);
   };
