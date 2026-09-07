@@ -14,6 +14,7 @@ function records(payload: unknown, keys: string[]) {
 }
 
 function numberValue(value: unknown, fallback = 0) {
+  if (value === null || value === undefined || value === '') return fallback;
   const parsed = typeof value === 'number' ? value : Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
 }
@@ -34,25 +35,41 @@ function playerKey(player: JsonRecord) {
 }
 
 function rankMap(payload: unknown) {
-  return new Map(records(payload, ['players', 'items', 'rankings']).map((player) => [playerKey(player), player]));
+  const map = new Map<string, JsonRecord>();
+  const rows = records(payload, ['players', 'items', 'rankings', 'injuries']);
+  rows.sort((a,b) => String(b.created ?? '').localeCompare(String(a.created ?? '')));
+  for (const player of rows) if (!map.has(playerKey(player))) map.set(playerKey(player), player);
+  return map;
+}
+
+function timestamp(value: unknown) {
+  if (!value) return undefined;
+  const numeric=typeof value==='number'||/^\d{10,13}$/.test(String(value))?Number(value):undefined;
+  const raw = numeric!==undefined ? numeric * (numeric < 1e12 ? 1000 : 1) : String(value).replace(/^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2})$/, '$1T$2Z');
+  const ms = new Date(raw).getTime();
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
 }
 
 function projectionPoints(player: JsonRecord, scoring: string) {
   const stats = player.stats && typeof player.stats === 'object' ? player.stats as JsonRecord : player;
-  if (scoring === 'PPR') return numberValue(stats.points_ppr ?? stats.fantasy_points_ppr ?? stats.points, 0);
-  if (scoring === 'HALF') return numberValue(stats.points_half ?? stats.fantasy_points_half ?? stats.points, 0);
+  const receptions=stats.rec??stats.rec_rec;
+  if (scoring === 'PPR') return numberValue(stats.points_ppr ?? stats.fantasy_points_ppr ?? (receptions!=null&&stats.points!=null?Number(stats.points)+Number(receptions):undefined), 0);
+  if (scoring === 'HALF') return numberValue(stats.points_half ?? stats.fantasy_points_half ?? (receptions!=null&&stats.points!=null?Number(stats.points)+Number(receptions)*.5:undefined), 0);
   return numberValue(stats.points ?? stats.fantasy_points ?? stats.points_std, 0);
 }
 
 async function fantasyProsFetch(path: string, apiKey: string) {
   const response = await fetch(`${API_ROOT}${path}`, {
     headers: { Accept: 'application/json', 'x-api-key': apiKey },
+    cache: 'no-store',
+    signal: AbortSignal.timeout(20000),
   });
   if (!response.ok) {
-    const detail = await response.text().catch(() => '');
-    throw new Error(`FantasyPros returned ${response.status}${detail ? `: ${detail.slice(0, 160)}` : ''}`);
+    throw new Error(`FantasyPros returned HTTP ${response.status} for ${path.split('?')[0]}.`);
   }
-  return response.json() as Promise<unknown>;
+  if(!/\bapplication\/(?:[\w.-]+\+)?json\b/i.test(response.headers.get('content-type')??''))throw new Error(`FantasyPros returned a non-JSON response for ${path.split('?')[0]}. Please try refreshing again.`);
+  try{return await response.json() as unknown;}
+  catch{throw new Error(`FantasyPros returned incomplete JSON for ${path.split('?')[0]}. Please try refreshing again.`);}
 }
 
 export async function GET(request: Request) {
@@ -74,10 +91,11 @@ export async function GET(request: Request) {
     return Response.json({ error: 'Scoring must be STD, HALF, or PPR.' }, { status: 400 });
   }
 
-  const query = `scoring=${encodeURIComponent(scoring)}`;
+  // ALL is a draft position; the API's current-week default can reject it.
+  const query = `week=0&scoring=${encodeURIComponent(scoring)}`;
   const endpointResults = await Promise.allSettled([
     fantasyProsFetch('/nfl/players', apiKey),
-    fantasyProsFetch(`/nfl/${season}/projections?week=0&positions=QB:RB:WR:TE:K:DST&${query}`, apiKey),
+    fantasyProsFetch(`/nfl/${season}/projections?positions=QB:RB:WR:TE:K:DST&${query}`, apiKey),
     fantasyProsFetch(`/nfl/${season}/consensus-rankings?position=ALL&${query}`, apiKey),
     fantasyProsFetch(`/nfl/${season}/consensus-rankings?position=ALL&type=DK&${query}`, apiKey),
     fantasyProsFetch(`/nfl/${season}/consensus-rankings?position=ALL&type=ADP&${query}`, apiKey),
@@ -108,40 +126,73 @@ export async function GET(request: Request) {
     const name = textValue(player.player_name, player.name, redraft.player_name, projection.name);
     const rawPosition = textValue(player.position_id, player.player_position_id, redraft.player_position_id, projection.position_id).split(',')[0].toUpperCase();
     const id = idValue(player.fpid, player.player_id, player.id) || name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
-    const consensusRank = numberValue(redraft.rank_ecr ?? redraft.rank ?? player.rank_ecr, 999);
-    const dynastyRank = numberValue(dynasty.rank_ecr ?? dynasty.rank ?? player.rank_ecr_dynasty, 999);
-    const averageDraftPosition = numberValue(adp.rank_adp ?? adp.rank_ecr ?? adp.rank ?? redraft.rank_adp ?? player.rank_adp, 999);
-    const tier = numberValue(dynasty.tier ?? redraft.tier, Math.max(1, Math.ceil(Math.min(dynastyRank, consensusRank, 999) / 12)));
+    const consensusRank = numberValue(redraft.rank_ecr ?? redraft.rank, 999);
+    const dynastyRank = numberValue(dynasty.rank_ecr ?? dynasty.rank, 999);
+    const averageDraftPosition = numberValue(adp.rank_adp ?? adp.rank_ave ?? adp.rank_ecr ?? redraft.rank_adp, 999);
+    const tier = numberValue(redraft.tier, Math.max(1, Math.ceil(consensusRank / 12)));
+    const stats = Object.fromEntries(Object.entries(projection.stats && typeof projection.stats === 'object' ? projection.stats : {}).filter(([,v]) => v !== null && v !== '' && Number.isFinite(Number(v))).map(([k,v]) => [k, Number(v)]));
+    // Public API uses rec_rec for receptions and fumbles for the FL projection column.
+    if(stats.rec===undefined&&stats.rec_rec!==undefined)stats.rec=stats.rec_rec;
+    if(stats.fumbles_lost===undefined&&stats.fumbles!==undefined)stats.fumbles_lost=stats.fumbles;
+    const fetchedAt = new Date().toISOString();
+    const projectionMeta = projectionResult.status === 'fulfilled' ? projectionResult.value as JsonRecord : {};
     return {
       id: `fp-${id}`,
       name,
       pos: rawPosition,
-      team: textValue(player.team_id, player.player_team_id, redraft.player_team_id, projection.team_id) || 'FA',
+      team: textValue(projection.team_id, redraft.player_team_id, player.team_id, player.player_team_id) || 'FA',
       projectedPoints: Math.round(projectionPoints(projection, scoring) * 10) / 10,
+      pointsByScoring: { standard: projectionPoints(projection, 'STD'), 'half-ppr': projectionPoints(projection, 'HALF'), ppr: projectionPoints(projection, 'PPR') },
+      stats,
+      projectionScoring: scoring === 'PPR' ? 'ppr' : scoring === 'HALF' ? 'half-ppr' : 'standard',
+      projectionUpdatedAt: timestamp(projection.updated_at ?? projectionMeta.last_updated_ts ?? projectionMeta.updated_at),
+      rankingsUpdatedAt: timestamp(redraftResult.status==='fulfilled'?(redraftResult.value as JsonRecord).last_updated_ts:undefined),
+      rankingsScoring: scoring === 'PPR' ? 'ppr' : scoring === 'HALF' ? 'half-ppr' : 'standard',
+      fetchedAt,
+      season,
+      hasProjection: projectionById.has(key),
+      active: projectionById.has(key) || redraftById.has(key) || dynastyById.has(key) || adpById.has(key),
+      adpSource: adp.rank_adp != null || adp.rank_ave != null ? 'average' : averageDraftPosition < 999 ? 'rank-proxy' : 'missing',
+      adpStdDev: numberValue(adp.rank_std, 0) || undefined,
+      rankStdDev: numberValue(redraft.rank_std, 0) || undefined,
+      rankBest: numberValue(redraft.rank_min, 0) || undefined,
+      rankWorst: numberValue(redraft.rank_max, 0) || undefined,
       adp: Math.round(averageDraftPosition * 10) / 10,
       age: numberValue(player.age, 27),
       dynastyRank: Math.round(dynastyRank),
       consensusRank: Math.round(consensusRank),
       tier: Math.max(1, Math.round(tier)),
-      bye: numberValue(player.bye_week ?? player.player_bye_week, 0),
+      bye: numberValue(redraft.player_bye_week ?? player.bye_week ?? player.player_bye_week, 0),
       injuryStatus: textValue(injury.status, injury.injury_status, injury.player_status, player.injury_status) || undefined,
       newsHeadline: textValue(news.title) || undefined,
-      newsUpdatedAt: textValue(news.created_formated, news.created, news.datetime) || undefined,
+      newsBody: textValue(news.impact, news.desc) || undefined,
+      newsUpdatedAt: timestamp(news.created ?? news.datetime),
     };
   }).filter((player) => player.name && POSITIONS.has(player.pos) && (
     player.team !== 'FA' || player.projectedPoints > 0 || player.consensusRank < 999 || player.dynastyRank < 999 || player.adp < 999
   ));
 
-  const warnings = endpointResults.slice(1).flatMap((result, index) => result.status === 'rejected' ? [`${['Projections', 'Redraft rankings', 'Dynasty rankings', 'ADP', 'Injuries', 'News'][index]} could not be refreshed.`] : []);
-  const missingCoreRankings = redraftResult.status === 'rejected' || dynastyResult.status === 'rejected';
-  if (players.length < 100 || missingCoreRankings) {
+  const warnings = endpointResults.slice(1).flatMap((result, index) => result.status === 'rejected' ? [`${['Projections', 'Redraft rankings', 'Dynasty rankings', 'ADP', 'Injuries', 'News'][index]} could not be refreshed. ${result.reason instanceof Error ? result.reason.message : ''}`] : []);
+  if (!injuryById.size) warnings.push('No injury records received; absence of a designation does not establish health.');
+  if (!newsById.size) warnings.push('No player news received.');
+  const coverage = { projections: projectionById.size, redraft: redraftById.size, dynasty: dynastyById.size, adp: adpById.size };
+  if (projectionResult.status === 'rejected' || redraftResult.status === 'rejected' || dynastyResult.status === 'rejected') {
     return Response.json({
       configured: true,
-      code: 'sample_access',
-      error: `This FantasyPros key returned ${players.length} sample players instead of the production draft pool. Activate API access through a paid FantasyPros HOF membership, then refresh again.`,
+      code: 'upstream_error',
+      error: `FantasyPros player data was received, but required draft data failed. ${warnings.join(' ')}`,
+      receivedPlayers: players.length, coverage, warnings,
+    }, { status: 502, headers: { 'Cache-Control': 'no-store' } });
+  }
+  if (players.length < 100 || coverage.projections < 100 || coverage.redraft < 100 || coverage.dynasty < 100) {
+    return Response.json({
+      configured: true,
+      code: 'incomplete_data',
+      error: `FantasyPros returned an incomplete draft dataset (${players.length} players, ${coverage.projections} projections, ${coverage.redraft} redraft and ${coverage.dynasty} dynasty rankings). This may be limited API access or unavailable season data; your saved board has been retained.`,
       receivedPlayers: players.length,
+      coverage,
       warnings,
-    }, { status: 403, headers: { 'Cache-Control': 'no-store' } });
+    }, { status: 502, headers: { 'Cache-Control': 'no-store' } });
   }
   return Response.json({
     configured: true,
@@ -150,6 +201,7 @@ export async function GET(request: Request) {
     scoring,
     updatedAt: new Date().toISOString(),
     players,
+    coverage,
     warnings,
   }, { headers: { 'Cache-Control': 'private, max-age=900, stale-while-revalidate=21600' } });
 }

@@ -1,0 +1,16 @@
+import {KEEPER_ROWS,KEEPER_TEAMS,KEEPER_TEAM,keeperOverallPick} from '@/lib/keeper-preset';
+import type {LeagueSettings} from '@/lib/draft';
+
+export function KeeperSetup({settings}:{settings:LeagueSettings}){
+ return <div className="space-y-4 text-sm">
+  <div className="rounded-lg bg-secondary p-3"><h3 className="font-semibold">Discord League · ready to draft</h3><p className="mt-1">{KEEPER_TEAM} · slot 8 of 12 · snake draft</p><p className="mt-2 text-muted-foreground">Your ESPN screenshots are the saved setup. No keeper entry or league configuration is needed.</p></div>
+  <dl className="grid grid-cols-2 gap-x-3 gap-y-2"><dt>QB</dt><dd>1 starter · max 4</dd><dt>RB</dt><dd>2 starters · max 8</dd><dt>WR</dt><dd>2 starters · max 8</dd><dt>TE</dt><dd>1 starter · max 3</dd><dt>FLEX</dt><dd>2 · RB / WR / TE</dd><dt>D/ST</dt><dd>1 starter · max 3</dd><dt>Kicker</dt><dd>0 · not draftable</dd><dt>Bench</dt><dd>6</dd><dt>IR</dt><dd>1 · not a draft slot</dd></dl>
+  <p className="text-muted-foreground">15 draft rounds: 9 starters + 6 bench. The extra IR slot does not add a draft round.</p>
+  <div className="rounded-lg border p-3"><p className="font-semibold">Your reserved picks</p>{KEEPER_ROWS.filter(k=>k.owner===KEEPER_TEAM).sort((a,b)=>a.round-b.round).map(k=><p key={k.name} className="mt-2">{k.name}<br/><span className="text-muted-foreground">Round {k.round}, pick {k.pickInRound} · overall {keeperOverallPick(k)}</span></p>)}</div>
+  <details><summary className="cursor-pointer font-medium">Scoring & strategy</summary><p className="mt-2 text-muted-foreground">Standard scoring; −2 per passing interception, 2 per defensive sack. Existing points-allowed scoring is retained. No kicker scoring is used. Recommendation policy: {settings.recommendationPolicy==='lookahead'?'experimental lookahead':'roster value'}. Current keeper costs are fixed; future keeper-value assumptions remain unvalidated.</p></details>
+  <details><summary className="cursor-pointer font-medium">Confirmed draft order</summary><ol className="mt-2 list-decimal space-y-1 pl-5">{KEEPER_TEAMS.map(t=><li key={t} className={t===KEEPER_TEAM?'font-semibold':''}>{t}{t===KEEPER_TEAM?' (you)':''}</li>)}</ol></details>
+ </div>;
+}
+export function ConfirmedKeepers(){
+ return <div className="space-y-3 text-sm"><div className="rounded-lg bg-secondary p-3"><h3 className="font-semibold">32 confirmed keepers · all costs set</h3><p className="mt-1 text-muted-foreground">Four teams selected two keepers. Unused keeper slots do not consume draft picks. These finalized costs are not escalated again.</p></div>{KEEPER_TEAMS.map(team=>{const keepers=KEEPER_ROWS.filter(k=>k.owner===team).sort((a,b)=>a.round-b.round);return <section key={team} className="rounded-lg border p-3"><h4 className="font-semibold">{team}{team===KEEPER_TEAM?' (you)':''}</h4><ul className="mt-2 space-y-2">{keepers.map(k=><li key={k.name}><span>{k.name}</span><span className="block text-muted-foreground">R{k.round} · pick {k.pickInRound} · overall {keeperOverallPick(k)}</span></li>)}</ul>{keepers.length<3&&<p className="mt-2 text-muted-foreground">No third keeper selected</p>}</section>;})}<p className="text-muted-foreground">Keeper-reserved selections are skipped automatically as you record the draft.</p></div>;
+}

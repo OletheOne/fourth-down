@@ -1,0 +1,15 @@
+import assert from 'node:assert/strict';
+import {loadModule} from './load-module.mjs';
+const {KEEPER_ROWS,KEEPER_TEAMS,applyKeeperPreset,findKeeperPlayer}=await loadModule('../lib/keeper-preset.ts');
+const {normalizeSettings,analyzeDraft}=await loadModule('../lib/optimizer.ts');
+assert.ok(process.env.SITE_READ_TOKEN,'Owner-private read token is required');
+const response=await fetch('https://fourth-down-draft-room.oletheone.chatgpt.site/api/fantasypros?season=2026&scoring=STD',{headers:{'OAI-Sites-Authorization':`Bearer ${process.env.SITE_READ_TOKEN}`}});
+assert.equal(response.status,200);const data=await response.json();assert.ok(data.players.length>100);
+const missing=KEEPER_ROWS.filter(k=>!findKeeperPlayer(data.players,k.name)).map(k=>k.name);
+assert.deepEqual(missing,[],'Every screenshot keeper must bind to a live player identity');
+const state=applyKeeperPreset({players:data.players,drafted:[],settings:normalizeSettings({userTeam:'',draftSlot:1,scoring:'standard',mode:'balanced',starters:{QB:1,RB:2,WR:2,TE:1,FLEX:2,K:0,DST:1},simulations:4})});
+assert.equal(new Set(state.drafted.map(k=>k.playerId)).size,32);
+const analysis=analyzeDraft(state.players,state.drafted,state.settings,KEEPER_TEAMS,{draftMode:'keeper',season:2026,dataSource:'fantasypros',lastSync:data.updatedAt});
+assert.equal(analysis.targetPick,8);assert.equal(analysis.nextPick,17);assert.ok(analysis.recommendations.length>0);
+assert.ok(analysis.recommendations.every(p=>p.pos!=='K'&&!state.drafted.some(k=>k.playerId===p.id)));
+console.log(JSON.stringify({httpStatus:response.status,livePlayers:data.players.length,matchedKeepers:32,unmatched:missing,targetPick:analysis.targetPick,nextPick:analysis.nextPick,recommendations:analysis.recommendations.length,excludedKeepersAndKickers:true}));

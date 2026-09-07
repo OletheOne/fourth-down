@@ -16,6 +16,24 @@ export type Player = {
   injuryStatus?: string;
   newsHeadline?: string;
   newsUpdatedAt?: string;
+  newsBody?: string;
+  pointsByScoring?: Partial<Record<LeagueSettings['scoring'], number>>;
+  stats?: Record<string, number>;
+  projectionScoring?: LeagueSettings['scoring'];
+  projectionUpdatedAt?: string;
+  rankingsUpdatedAt?: string;
+  rankingsScoring?: LeagueSettings['scoring'];
+  fetchedAt?: string;
+  season?: number;
+  rankStdDev?: number;
+  rankBest?: number;
+  rankWorst?: number;
+  adpStdDev?: number;
+  adpSource?: 'average' | 'rank-proxy' | 'missing';
+  active?: boolean;
+  hasProjection?: boolean;
+  expectedGames?: number;
+  risk?: { missedGames?: number; volatility?: number; note?: string; projectionIncludesAbsence?: boolean };
 };
 
 export type DraftedPlayer = {
@@ -27,6 +45,7 @@ export type DraftedPlayer = {
   originalRound?: number;
   seasonsKept?: number;
   costRound?: number;
+  pickInRound?: number;
 };
 
 export type LeagueSettings = {
@@ -35,6 +54,19 @@ export type LeagueSettings = {
   scoring: 'standard' | 'half-ppr' | 'ppr';
   mode: 'contend' | 'balanced' | 'rebuild';
   starters: Record<Position | 'FLEX', number>;
+  superflex?: number;
+  bench?: number;
+  irSlots?: number;
+  positionLimits?: Partial<Record<Position, number>>;
+  customScoring?: Record<string, number>;
+  positionScoring?: Partial<Record<Position, Record<string, number>>>;
+  bonusRules?: { fieldGoals?: number[]; pointsAllowed?: number[] };
+  scoringSource?: string;
+  rulesConfirmed?: boolean;
+  keeperRules?: { limit: number; escalation: number; horizon: number; discount: number; firstRound: 'ineligible' | 'round-one'; collision: 'earlier' | 'reject' };
+  riskTolerance?: number;
+  simulations?: number;
+  recommendationPolicy?: 'roster-value' | 'lookahead';
 };
 
 const makeId = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
@@ -82,7 +114,6 @@ export const demoPlayers: Player[] = [
   dynastyRank: dynastyRank as number, tier: tier as number, bye: bye as number,
 }));
 
-const clamp = (value: number, min = 0, max = 100) => Math.min(max, Math.max(min, value));
 
 export type Recommendation = Player & {
   score: number;
@@ -90,86 +121,17 @@ export type Recommendation = Player & {
   rationale: string[];
 };
 
-export function rankAvailable(players: Player[], drafted: DraftedPlayer[], settings: LeagueSettings, teams = Array.from({ length: 12 }, (_, index) => `Team ${index + 1}`)): Recommendation[] {
-  const draftedIds = new Set(drafted.map((entry) => entry.playerId));
-  const draftedNames = new Set(drafted.map((entry) => entry.playerName?.toLowerCase()).filter(Boolean));
-  const available = players.filter((player) => !draftedIds.has(player.id) && !draftedNames.has(player.name.toLowerCase()));
-  const myPlayers = drafted.filter((entry) => entry.owner === settings.userTeam)
-    .map((entry) => players.find((player) => player.id === entry.playerId || player.name.toLowerCase() === entry.playerName?.toLowerCase())).filter(Boolean) as Player[];
-  const rosterCount = myPlayers.reduce<Record<string, number>>((acc, player) => {
-    acc[player.pos] = (acc[player.pos] ?? 0) + 1;
-    return acc;
-  }, {});
-  const draftPicks = drafted.filter((entry) => entry.kind === 'draft');
-  const keeperPicks = new Set(drafted.filter((entry) => entry.kind === 'keeper').map((entry) => keeperPickNumber(entry, teams)).filter((pick): pick is number => Boolean(pick)));
-  const usedPicks = new Set(draftPicks.map((entry) => entry.pick));
-  let currentBoardPick = 1;
-  while (usedPicks.has(currentBoardPick) || keeperPicks.has(currentBoardPick)) currentBoardPick += 1;
-  let nextPick = estimateNextPick(currentBoardPick, settings.draftSlot, teams.length);
-  while (keeperPicks.has(nextPick)) nextPick = estimateNextPick(nextPick, settings.draftSlot, teams.length);
-  const dynastyWeight = settings.mode === 'rebuild' ? 0.34 : settings.mode === 'contend' ? 0.12 : 0.23;
-  const projections = available.map((player) => player.projectedPoints);
-  const minProjection = Math.min(...projections, 0);
-  const maxProjection = Math.max(...projections, 1);
-  const recentDraft = drafted.filter((entry) => entry.kind === 'draft').slice(-12);
-  const recentPositionCounts = recentDraft.reduce<Record<string, number>>((counts, entry) => {
-    const selected = players.find((player) => player.id === entry.playerId || player.name.toLowerCase() === entry.playerName?.toLowerCase());
-    if (selected) counts[selected.pos] = (counts[selected.pos] ?? 0) + 1;
-    return counts;
-  }, {});
-
-  return available.map((player) => {
-    const receptionBoost = settings.scoring === 'ppr' ? (player.pos === 'TE' ? 10 : player.pos === 'WR' ? 7 : player.pos === 'RB' ? 3 : 0)
-      : settings.scoring === 'half-ppr' ? (player.pos === 'TE' ? 5 : player.pos === 'WR' ? 3.5 : player.pos === 'RB' ? 1.5 : 0) : 0;
-    const projectionScore = clamp(((player.projectedPoints - minProjection) / (maxProjection - minProjection || 1)) * 100);
-    const consensusScore = player.consensusRank && player.consensusRank < 900 ? clamp(104 - player.consensusRank * 1.25) : projectionScore;
-    const injury = player.injuryStatus?.toLowerCase() ?? '';
-    const injuryPenalty = injury.includes('out') || injury.includes('reserve') || injury === 'ir' ? 42
-      : injury.includes('doubtful') ? 24 : injury.includes('questionable') ? 9 : 0;
-    const winNow = clamp(projectionScore * 0.68 + consensusScore * 0.32 + receptionBoost - injuryPenalty);
-    const dynasty = clamp(104 - player.dynastyRank * 1.65 - Math.max(0, player.age - 27) * 2.5);
-    const samePosition = available.filter((candidate) => candidate.pos === player.pos && candidate.id !== player.id);
-    const nextAtPosition = samePosition.sort((a, b) => b.projectedPoints - a.projectedPoints)[0];
-    const drop = nextAtPosition ? player.projectedPoints - nextAtPosition.projectedPoints : 18;
-    const scarcity = clamp(45 + drop * 2.8 + (player.tier === 1 ? 18 : player.tier === 2 ? 8 : 0));
-    const starterNeed = player.pos === 'RB' || player.pos === 'WR'
-      ? settings.starters[player.pos] + settings.starters.FLEX * 0.5 : settings.starters[player.pos];
-    const filled = rosterCount[player.pos] ?? 0;
-    const rosterFit = clamp(filled < starterNeed ? 86 - filled * 13 : 38 - (filled - starterNeed) * 10);
-    const picksUntilNext = Math.max(1, nextPick - currentBoardPick);
-    const positionalRun = clamp((recentPositionCounts[player.pos] ?? 0) * 13);
-    const urgencyFromAdp = 100 / (1 + Math.exp((player.adp - (drafted.length + picksUntilNext * 0.72)) / 5));
-    const urgency = clamp(urgencyFromAdp * 0.72 + positionalRun * 0.28);
-    const score = winNow * (0.54 - dynastyWeight / 2) + dynasty * dynastyWeight + scarcity * 0.13 + rosterFit * 0.13 + urgency * (0.20 - dynastyWeight / 2);
-    return {
-      ...player, score, components: { winNow, dynasty, scarcity, rosterFit, urgency },
-      rationale: [
-        `${Math.round(winNow)} immediate-value signal from projections${player.consensusRank && player.consensusRank < 900 ? ` and redraft ECR ${player.consensusRank}` : ''}`,
-        player.dynastyRank < 900 ? `dynasty consensus rank ${player.dynastyRank}` : 'limited dynasty consensus coverage',
-        `${player.pos}${player.tier === 1 ? ' elite-tier scarcity' : ` tier ${player.tier}`} with a ${Math.max(0, drop).toFixed(1)}-point drop to the next option`,
-        filled < starterNeed ? `fills an open ${player.pos} starter need` : `adds depth after ${Math.round(filled)} rostered ${player.pos}${filled === 1 ? '' : 's'}`,
-        urgency > 62 ? 'unlikely to survive to your next turn' : urgency < 35 ? 'has a reasonable chance to reach your next turn' : 'availability at your next turn is uncertain',
-        ...(recentPositionCounts[player.pos] ? [`${recentPositionCounts[player.pos]} ${player.pos}${recentPositionCounts[player.pos] === 1 ? '' : 's'} selected in the last ${recentDraft.length} picks`] : []),
-        ...(injuryPenalty ? [`current ${player.injuryStatus} designation is reducing the recommendation`] : []),
-        ...(player.newsHeadline ? [`latest FantasyPros news: ${player.newsHeadline}`] : []),
-      ],
-    };
-  }).sort((a, b) => b.score - a.score);
-}
-
-function keeperPickNumber(entry: DraftedPlayer, teams: string[]) {
-  if (!entry.costRound) return undefined;
-  const slot = teams.findIndex((team) => team.toLowerCase() === entry.owner.toLowerCase()) + 1;
-  if (!slot) return undefined;
-  const pickInRound = entry.costRound % 2 === 1 ? slot : teams.length - slot + 1;
-  return (entry.costRound - 1) * teams.length + pickInRound;
-}
 
 export function estimateNextPick(currentPick: number, slot: number, teams = 12) {
-  const round = Math.floor((currentPick - 1) / teams) + 1;
-  const nextRound = round + 1;
-  return (nextRound - 1) * teams + (nextRound % 2 === 1 ? slot : teams - slot + 1);
+  for (let pick = currentPick + 1; pick <= currentPick + teams * 2; pick++) {
+    const round = Math.floor((pick - 1) / teams);
+    const owner = round % 2 === 0 ? (pick - 1) % teams + 1 : teams - (pick - 1) % teams;
+    if (owner === slot) return pick;
+  }
+  return currentPick + teams * 2;
 }
+
+export { analyzeDraft, rankAvailable } from './optimizer';
 
 export function parsePlayerCsv(raw: string): Player[] {
   const lines = raw.trim().split(/\r?\n/).filter(Boolean);

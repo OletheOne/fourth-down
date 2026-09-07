@@ -1,0 +1,116 @@
+[
+  {
+    "file": "player_2018.csv",
+    "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2018.csv",
+    "bytes": 7792665,
+    "sha256": "c53021bcfc9f89d30edd6f1fe145a1d7d6ce469efeec75974fe9f0adac568642"
+  },
+  {
+    "file": "player_2019.csv",
+    "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2019.csv",
+    "bytes": 7767165,
+    "sha256": "a05558126b1209b80fe11a8f18938cb35816370bf9990975a87de49e9eed7376"
+  },
+  {
+    "file": "player_2020.csv",
+    "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2020.csv",
+    "bytes": 7883270,
+    "sha256": "05b992676faccc8940efbf6242cb76358069372d31d7c2e02c1a4acdcd3cbe18"
+  },
+  {
+    "file": "player_2021.csv",
+    "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2021.csv",
+    "bytes": 8477784,
+    "sha256": "41915fb49238902ad1f129ebf0405b11a1e710454ae0fe8f7b3e4f9145875f48"
+  },
+  {
+    "file": "player_2022.csv",
+    "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2022.csv",
+    "bytes": 8408729,
+    "sha256": "ad426c3fe5bf1cc30c3f137fdfe96d054e19d400879ee4413129da49fa7b54be"
+  },
+  {
+    "file": "player_2023.csv",
+    "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2023.csv",
+    "bytes": 8332874,
+    "sha256": "f19cb71a5de0dce7fd09376026237c9ee9d5a93fe13815a2ea3ec2d37204cb17"
+  },
+  {
+    "file": "player_2024.csv",
+    "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2024.csv",
+    "bytes": 8470040,
+    "sha256": "3ddc45a84f759aa348ce465ae001752c530575455717657cdfe1f8abfcdb4759"
+  },
+  {
+    "file": "player_2025.csv",
+    "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_player/stats_player_week_2025.csv",
+    "bytes": 8656387,
+    "sha256": "e5e0615b3d96a3eaebfaee91e55afb4a4e7fe0caf057454177bcd7d6ad4bcfc2"
+  },
+  {
+    "file": "team_2018.csv",
+    "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_team/stats_team_week_2018.csv",
+    "bytes": 215509,
+    "sha256": "d2df3adf2fbadfb597bc334807f5020aefe2b2ae13d28155f7f01cb981f00555"
+  },
+  {
+    "file": "team_2019.csv",
+    "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_team/stats_team_week_2019.csv",
+    "bytes": 215441,
+    "sha256": "d3311b008de52dd95729d76d225b45f51eb91932e8fa3c38c18548397aa00a06"
+  },
+  {
+    "file": "team_2020.csv",
+    "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_team/stats_team_week_2020.csv",
+    "bytes": 216943,
+    "sha256": "a8f2cc2055404fc293105af25f14ff28593c32961912e752e2e50f4a6ba461ad"
+  },
+  {
+    "file": "team_2021.csv",
+    "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_team/stats_team_week_2021.csv",
+    "bytes": 229707,
+    "sha256": "a094523217f7f351a79f5e667dbe67267e0861a3b76a7a3b62a1cfe49f289673"
+  },
+  {
+    "file": "team_2022.csv",
+    "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_team/stats_team_week_2022.csv",
+    "bytes": 228947,
+    "sha256": "9803875bd0b74aa49230288d45359c75e45910f1cf1953ea0f07b9d3db35e4d1"
+  },
+  {
+    "file": "team_2023.csv",
+    "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_team/stats_team_week_2023.csv",
+    "bytes": 229582,
+    "sha256": "dc5a387daabe8663deaddac492ad7020d47fb1a66048690b355b406cd8e4c454"
+  },
+  {
+    "file": "team_2024.csv",
+    "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_team/stats_team_week_2024.csv",
+    "bytes": 229712,
+    "sha256": "b207a1430c2715d03bbf1844c4eae98695f364851ff6025f422febc2c13f5255"
+  },
+  {
+    "file": "team_2025.csv",
+    "url": "https://github.com/nflverse/nflverse-data/releases/download/stats_team/stats_team_week_2025.csv",
+    "bytes": 229660,
+    "sha256": "91058a59d894855377b2f39f40c4e7bdbeef96d12144289dc68215209a1c93cb"
+  },
+  {
+    "file": "rankings.csv.gz",
+    "url": "https://raw.githubusercontent.com/dynastyprocess/data/master/files/db_fpecr.csv.gz",
+    "bytes": 104685532,
+    "sha256": "4fbcb3486136bc1f26738e94ac4daabf72d2280b969433589b8588a7819ae169"
+  },
+  {
+    "file": "ids.csv",
+    "url": "https://raw.githubusercontent.com/dynastyprocess/data/master/files/db_playerids.csv",
+    "bytes": 2631648,
+    "sha256": "a02b7dc2364a8b8de2bd3c91147b1dce46033f627a382161c409b29c5e7defd2"
+  },
+  {
+    "file": "games.csv",
+    "url": "https://raw.githubusercontent.com/nflverse/nfldata/master/data/games.csv",
+    "bytes": 2178574,
+    "sha256": "b688f48e6f4f475bceec0a0c30854c1b01d89aca7fd28c93226c05f28183778a"
+  }
+]
