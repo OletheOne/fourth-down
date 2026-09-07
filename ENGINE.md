@@ -2,6 +2,8 @@
 
 This is a bounded, deterministic-seed decision model, not a guarantee or a trained win-probability model.
 
+Analysis ships as an inline worker so startup does not depend on another authenticated asset request. If workers are blocked, fail to load, or fail to reply within 30 seconds, the same bundled engine runs locally as a fallback. Cancelled/profile-switched jobs cannot publish results. Refresh requests include credentials and check status/content type before parsing JSON. Expired private-site sessions offer a top-level Sites sign-in link; failed refreshes do not replace players, keepers or picks. No API key or authentication bypass token is bundled in the client.
+
 ## Objective and rollout
 
 Score completed rosters by optimized starter points, bye-week replacement coverage, diminishing bench insurance above waiver replacement, and (keeper mode only) discounted keeper portfolio value. Subtract a configurable downside preference times scenario dispersion. Shared random scenarios compare a shortlist built from immediate roster gains, market leaders, each position's leader and keeper candidates. Opponents use their own roster needs, limits, ADP dispersion and recent position runs. Later user picks use greedy legal roster improvement. This is full-draft rollout with a bounded shortlist, not exhaustive search over every possible draft sequence.
