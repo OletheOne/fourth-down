@@ -12,6 +12,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { demoPlayers, type DraftedPlayer, type LeagueSettings, parsePlayerCsv, type Player } from '@/lib/draft';
 import { normalizeSettings, type DraftAnalysis, nameKey, keeperCost, resolveKeeperContracts } from '@/lib/optimizer';
 import { EngineSettings, PlayerRiskEditor } from '@/components/engine-settings';
+import { applyDiscordRules } from '@/lib/discord-rules';
 
 const defaultSettings: LeagueSettings = {
   userTeam: 'Team 6', draftSlot: 6, scoring: 'ppr', mode: 'balanced',
@@ -78,6 +79,15 @@ export default function Home() {
   const [profiles, setProfiles] = useState<LeagueProfile[]>([{ id: 'discord-league', name: 'Discord League' }]);
   const [activeProfileId, setActiveProfileId] = useState('discord-league');
   const [newProfileName, setNewProfileName] = useState('');
+
+  useEffect(()=>{
+    // Only the verified league/team, once. Never apply this to a mock profile or
+    // reorder teams using FantasyPros team IDs (they are not draft slots).
+    if(hydrated && (espnLeagueName==='Discord League'||activeProfileId==='discord-league') && settings.userTeam==='Super Smash Burrows' && !settings.scoringSource){
+      setSettings(applyDiscordRules(settings));
+      setNotice('Applied verified Discord scoring and starter slots, including estimated FG-distance and DST points-allowed bonuses. Your picks, team order and keeper contracts were preserved. Review keeper edge-case rules in Setup.');
+    }
+  },[hydrated,activeProfileId,espnLeagueName,settings]);
 
   useEffect(() => {
     let list: LeagueProfile[] = [{ id: 'discord-league', name: 'Discord League' }];
@@ -583,7 +593,7 @@ export default function Home() {
               <PlayerRiskEditor key={best.id} player={best} onSave={risk=>setPlayers(ps=>ps.map(p=>p.id===best.id?{...p,risk}:p))}/></>}
             {analysis?.warnings.map(w=><p key={w} className="rounded-md bg-amber-50 p-2 text-sm text-amber-950">{w}</p>)}
             <details><summary className="cursor-pointer text-sm font-medium">How to interpret this model</summary><p className="mt-2 text-sm text-muted-foreground">Opponent choices use ADP dispersion, their own roster vacancies, position limits, and recent draft runs. Bench insurance assumes a 12% reserve option value with diminishing returns. Keeper future values use dynasty consensus as a proxy, not a forecast of future rankings. We do not apply a second age or PPR penalty/bonus. Historical outcome validation is not available; automated scenario tests check behavior, not guaranteed performance. Unsupported scoring and missing source timestamps remain explicit warnings.</p></details>
-            <details><summary className="cursor-pointer text-sm font-medium">Validation results & scope</summary><p className="mt-2 text-sm text-muted-foreground">96 synthetic first-pick regression cases, zero illegal completed rosters. The conservative model averaged 1,483 starter points versus 1,477 for ADP/positional value and 1,477 for expert rankings. The roughly 6-point difference is smaller than sampling uncertainty (about ±14): no meaningful advantage is established. This is not historical NFL validation. Supported draft: snake, traditional or round-cost keepers. Auction, traded-pick schedules, IDP and custom flex eligibility require additional support.</p></details>
+            <details><summary className="cursor-pointer text-sm font-medium">Validation results & scope</summary><div className="mt-2 space-y-2 text-sm text-muted-foreground"><p>The old 96-case synthetic exercise is retired as evidence. The new test compares every pick across 12-team, 15-round drafts using archived preseason rankings and real weekly NFL outcomes. Lineup choices cannot see outcomes. All 72 completed draft runs across 24 contexts were legal.</p><p>In the untouched 2025 season, experimental lookahead trailed roster value by 102.6 points in the PPR replay and 143.7 in the standard-scoring stress test, averaged over three slots and two opponent styles. The simpler roster-value policy is now the default. 2024 is an audited replay, not an untouched holdout. One final season cannot establish general superiority.</p><p>Limits: historical forecasts were trained rank-to-points estimates, not archived FantasyPros projections; the ranking archive is PPR, not ADP, and the latest 2025 snapshot was August 8. Opponents are simulated. Weekly lineups use preseason expectations and known byes, without waiver moves or injury updates. Keeper advantage is not historically validated.</p><p>Bonus model: 2020–2022 development, 2023–2025 chronological evaluation. Estimated kicker-distance bonus MAE ~3.5 versus ~14.2 for omitted bonuses, conditional on made-FG volume. DST band bonus MAE ~11.7 versus ~15.0 for omitted bands. These are estimates, not exact provider projections or proof of draft advantage.</p><p>Supported draft: snake, traditional or round-cost keepers. Auction, traded-pick schedules, IDP and custom flex eligibility require additional support. <a href="https://github.com/nflverse/nflverse-data" target="_blank" rel="noreferrer" className="underline">nflverse statistics (CC BY 4.0)</a>; <a href="https://github.com/dynastyprocess/data" target="_blank" rel="noreferrer" className="underline">DynastyProcess archived FantasyPros rankings</a> used locally for research.</p></div></details>
           </section>
 
           <div className="rounded-2xl border bg-card p-5 shadow-sm sm:p-6">

@@ -1,0 +1,187 @@
+{
+  "summary": {
+    "seasons": [
+      2024,
+      2025
+    ],
+    "independentSeasons": 2,
+    "draftContexts": 12,
+    "seasonDifferences": [
+      {
+        "year": 2024,
+        "versusRosterValue": 30.716666666666658,
+        "versusECR": 234.55000000000007
+      },
+      {
+        "year": 2025,
+        "versusRosterValue": -143.68333333333337,
+        "versusECR": 73.7833333333333
+      }
+    ],
+    "limitation": "2024 was partially observed before a hindsight-grading correction and is an audited replay. Only 2025 was untouched for the corrected policy. Scenarios share season outcomes, not independent season replications. Archived rankings are PPR ECR (not ADP), making standard scoring a stress test against a mismatched market. 2025 snapshot is August 8. No historical FantasyPros projections, real opponent logs, injury-aware weekly lineups, waivers or keeper validation.",
+    "untouchedFinalSeasons": [
+      2025
+    ],
+    "auditedReplaySeasons": [
+      2024
+    ]
+  },
+  "results": [
+    {
+      "year": 2024,
+      "scoring": "standard",
+      "slot": 1,
+      "style": "market",
+      "points": {
+        "ECR": 1026,
+        "Roster value": 1226.94,
+        "Lookahead": 1475.24
+      },
+      "lookaheadDepartures": 4,
+      "elapsedMs": 11634
+    },
+    {
+      "year": 2024,
+      "scoring": "standard",
+      "slot": 1,
+      "style": "needs",
+      "points": {
+        "ECR": 1014.84,
+        "Roster value": 1355.74,
+        "Lookahead": 1382.14
+      },
+      "lookaheadDepartures": 3,
+      "elapsedMs": 11398
+    },
+    {
+      "year": 2024,
+      "scoring": "standard",
+      "slot": 6,
+      "style": "market",
+      "points": {
+        "ECR": 1305.74,
+        "Roster value": 1352.64,
+        "Lookahead": 1425.74
+      },
+      "lookaheadDepartures": 4,
+      "elapsedMs": 12520
+    },
+    {
+      "year": 2024,
+      "scoring": "standard",
+      "slot": 6,
+      "style": "needs",
+      "points": {
+        "ECR": 975.14,
+        "Roster value": 1249.64,
+        "Lookahead": 1397.24
+      },
+      "lookaheadDepartures": 3,
+      "elapsedMs": 12788
+    },
+    {
+      "year": 2024,
+      "scoring": "standard",
+      "slot": 12,
+      "style": "market",
+      "points": {
+        "ECR": 1455.52,
+        "Roster value": 1655.34,
+        "Lookahead": 1673.64
+      },
+      "lookaheadDepartures": 5,
+      "elapsedMs": 12514
+    },
+    {
+      "year": 2024,
+      "scoring": "standard",
+      "slot": 12,
+      "style": "needs",
+      "points": {
+        "ECR": 1559.3,
+        "Roster value": 1719.24,
+        "Lookahead": 1389.84
+      },
+      "lookaheadDepartures": 3,
+      "elapsedMs": 12669
+    },
+    {
+      "year": 2025,
+      "scoring": "standard",
+      "slot": 1,
+      "style": "market",
+      "points": {
+        "ECR": 1165.46,
+        "Roster value": 1441.52,
+        "Lookahead": 1214.62
+      },
+      "lookaheadDepartures": 4,
+      "elapsedMs": 12428
+    },
+    {
+      "year": 2025,
+      "scoring": "standard",
+      "slot": 1,
+      "style": "needs",
+      "points": {
+        "ECR": 1266.58,
+        "Roster value": 1334.62,
+        "Lookahead": 1127.84
+      },
+      "lookaheadDepartures": 4,
+      "elapsedMs": 12023
+    },
+    {
+      "year": 2025,
+      "scoring": "standard",
+      "slot": 6,
+      "style": "market",
+      "points": {
+        "ECR": 1373.22,
+        "Roster value": 1548.92,
+        "Lookahead": 1243.48
+      },
+      "lookaheadDepartures": 6,
+      "elapsedMs": 11300
+    },
+    {
+      "year": 2025,
+      "scoring": "standard",
+      "slot": 6,
+      "style": "needs",
+      "points": {
+        "ECR": 1371.98,
+        "Roster value": 1305.32,
+        "Lookahead": 1320.08
+      },
+      "lookaheadDepartures": 4,
+      "elapsedMs": 12189
+    },
+    {
+      "year": 2025,
+      "scoring": "standard",
+      "slot": 12,
+      "style": "market",
+      "points": {
+        "ECR": 1330.3,
+        "Roster value": 1608.3,
+        "Lookahead": 1593.8
+      },
+      "lookaheadDepartures": 5,
+      "elapsedMs": 11049
+    },
+    {
+      "year": 2025,
+      "scoring": "standard",
+      "slot": 12,
+      "style": "needs",
+      "points": {
+        "ECR": 1229.56,
+        "Roster value": 1803.22,
+        "Lookahead": 1679.98
+      },
+      "lookaheadDepartures": 1,
+      "elapsedMs": 12604
+    }
+  ]
+}

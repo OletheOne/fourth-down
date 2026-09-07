@@ -1,0 +1,77 @@
+{
+  "bonus": {
+    "kicker": {
+      "seasons": [
+        2023,
+        2024,
+        2025
+      ],
+      "units": 126,
+      "events": 2779,
+      "meanSeasonMAE": 3.538038943465661,
+      "meanOmittedBonusMAE": 14.162878787878787,
+      "meanPriorMAE": 3.538038943465661,
+      "caveat": "Kicker counts conditional on realized made-FG volume; DST conditional on games played. These tests validate event composition, not FantasyPros volume projections or draft advantage."
+    },
+    "defense": {
+      "seasons": [
+        2023,
+        2024,
+        2025
+      ],
+      "units": 96,
+      "events": 1632,
+      "meanSeasonMAE": 11.717694705906288,
+      "meanOmittedBonusMAE": 15.03125,
+      "meanPriorMAE": 11.68759869720642,
+      "caveat": "Kicker counts conditional on realized made-FG volume; DST conditional on games played. These tests validate event composition, not FantasyPros volume projections or draft advantage."
+    }
+  },
+  "drafts": [
+    {
+      "scoring": "ppr",
+      "year": 2024,
+      "contexts": 6,
+      "status": "audited replay",
+      "averages": {
+        "ECR": 1528.7566666666664,
+        "Roster value": 1795.0266666666666,
+        "Lookahead": 1785.7266666666665
+      }
+    },
+    {
+      "scoring": "ppr",
+      "year": 2025,
+      "contexts": 6,
+      "status": "untouched final season",
+      "averages": {
+        "ECR": 1620.8500000000001,
+        "Roster value": 1789.9633333333334,
+        "Lookahead": 1687.3666666666668
+      }
+    },
+    {
+      "scoring": "standard",
+      "year": 2024,
+      "contexts": 6,
+      "status": "audited replay",
+      "averages": {
+        "ECR": 1222.7566666666667,
+        "Roster value": 1426.5900000000001,
+        "Lookahead": 1457.3066666666666
+      }
+    },
+    {
+      "scoring": "standard",
+      "year": 2025,
+      "contexts": 6,
+      "status": "untouched final season",
+      "averages": {
+        "ECR": 1289.5166666666667,
+        "Roster value": 1506.9833333333333,
+        "Lookahead": 1363.3000000000002
+      }
+    }
+  ],
+  "decision": "Roster-value default. Experimental lookahead was not promoted. No statistically established general draft advantage; one untouched final NFL season is insufficient. Bonus errors validate only event composition under stated historical scoring reconstruction and volume conditions."
+}

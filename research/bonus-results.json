@@ -1,0 +1,96 @@
+{
+  "kicker": {
+    "selectedShrinkage": 1000000000,
+    "developmentBrier": {
+      "0": 0.5868207511746881,
+      "16": 0.5780771111305686,
+      "32": 0.5756777788139802,
+      "64": 0.5740007599606555,
+      "128": 0.5731887269986352,
+      "1000000000": 0.573039808912851
+    },
+    "holdout": [
+      {
+        "year": 2023,
+        "units": 40,
+        "events": 911,
+        "brier": 0.570647826934784,
+        "mae": 3.018461073790399,
+        "bias": -0.08373447037308264,
+        "priorMAE": 3.018461073790399,
+        "priorBrier": 0.570647826934784,
+        "zeroMAE": 13.375
+      },
+      {
+        "year": 2024,
+        "units": 44,
+        "events": 937,
+        "brier": 0.6014422992779258,
+        "mae": 3.7936842111022155,
+        "bias": -1.5899325828076365,
+        "priorMAE": 3.7936842111022155,
+        "priorBrier": 0.6014422992779258,
+        "zeroMAE": 14.113636363636363
+      },
+      {
+        "year": 2025,
+        "units": 42,
+        "events": 931,
+        "brier": 0.6134369518103802,
+        "mae": 3.8019715455043674,
+        "bias": -1.0277375025381568,
+        "priorMAE": 3.8019715455043674,
+        "priorBrier": 0.6134369518103802,
+        "zeroMAE": 15.0
+      }
+    ],
+    "caveat": "Kicker counts conditional on realized made-FG volume; DST conditional on games played. These tests validate event composition, not FantasyPros volume projections or draft advantage."
+  },
+  "defense": {
+    "selectedShrinkage": 128,
+    "developmentBrier": {
+      "0": 0.8169994027647238,
+      "16": 0.8043968297728208,
+      "32": 0.800579198825751,
+      "64": 0.7982802151564607,
+      "128": 0.7974870525271344,
+      "1000000000": 0.7979819118294218
+    },
+    "holdout": [
+      {
+        "year": 2023,
+        "units": 32,
+        "events": 544,
+        "brier": 0.7987097574820199,
+        "mae": 11.285470560108022,
+        "bias": -5.765472811101198,
+        "priorMAE": 11.133146273090958,
+        "priorBrier": 0.7981471881289068,
+        "zeroMAE": 17.4375
+      },
+      {
+        "year": 2024,
+        "units": 32,
+        "events": 544,
+        "brier": 0.7927614733473656,
+        "mae": 12.025420775676043,
+        "bias": 4.315481513907161,
+        "priorMAE": 11.636313344463787,
+        "priorBrier": 0.7938061505187505,
+        "zeroMAE": 12.625
+      },
+      {
+        "year": 2025,
+        "units": 32,
+        "events": 544,
+        "brier": 0.7994072971290579,
+        "mae": 11.842192781934802,
+        "bias": 2.8106245228044835,
+        "priorMAE": 12.293336474064517,
+        "priorBrier": 0.8010345557254521,
+        "zeroMAE": 15.03125
+      }
+    ],
+    "caveat": "Kicker counts conditional on realized made-FG volume; DST conditional on games played. These tests validate event composition, not FantasyPros volume projections or draft advantage."
+  }
+}

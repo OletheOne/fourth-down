@@ -1,6 +1,7 @@
 import type { Player, DraftedPlayer, LeagueSettings, Position, Recommendation } from './draft';
+import { estimateBonuses } from './bonus-scoring';
 
-export const ENGINE_VERSION = 'roster-lookahead-2';
+export const ENGINE_VERSION = 'roster-lookahead-3';
 const POS: Position[] = ['QB', 'RB', 'WR', 'TE', 'K', 'DST'];
 const flex = new Set<Position>(['RB', 'WR', 'TE']);
 const finite = (x: unknown, fallback = 0): number => typeof x === 'number' && Number.isFinite(x) ? x : fallback;
@@ -31,7 +32,7 @@ export const STAT_LABELS: Record<string, string> = { pass_yds: 'Passing yards', 
 // https://www.fantasypros.com/scoring-settings/ (INT = -1, FL = -2).
 export const STANDARD_SCORING: Record<string, number> = { pass_yds: .04, pass_tds: 4, pass_ints: -1, rush_yds: .1, rush_tds: 6, rec: 0, rec_yds: .1, rec_tds: 6, fumbles_lost: -2, '2pt_tds':2, ret_tds:6, fg:3, xpt:1, def_sack:1, def_int:2, def_fr:2, def_safety:2, def_td:6, def_retd:6 };
 export type DraftContext = { draftMode?: 'traditional' | 'keeper'; now?: number; seed?: number; season?: number; dataSource?: string; lastSync?: string; warnings?: string[]; rosters?: Array<{team:string;players:string[]}>; rostersAreCurrentDraft?: boolean };
-export type EvaluatedPlayer = Player & { value: number; uncertainty: number; issues: string[] };
+export type EvaluatedPlayer = Player & { value: number; uncertainty: number; issues: string[]; estimatedBonusPoints?:number; bonusDetails?:string[] };
 export type DraftRecommendation = Recommendation & { projectedValue: number; marginalPoints: number; replacementPoints: number; keeperValue: number; nextKeeperRound?: number; survival: number; nextOption?: string; nextPick?: number; plan: string[]; confidence: 'low' | 'medium' | 'high'; issues: string[]; spread: number; evaluated: boolean; baseline?: boolean; conservativeEdge?: number };
 export type DraftAnalysis = { recommendations: DraftRecommendation[]; warnings: string[]; excluded: number; eligible: number; currentPick: number; targetPick?: number; nextPick?: number; simulations: number; candidateCount: number; openSlots: string[]; version: string; comparison?: string };
 
@@ -39,6 +40,7 @@ export function normalizeSettings(s: LeagueSettings): LeagueSettings {
   return { ...s, starters: Object.fromEntries([...POS, 'FLEX'].map(p => [p, bounded(Math.round(finite(s.starters?.[p as keyof typeof s.starters])), 0, 10)])) as LeagueSettings['starters'],
     bench: bounded(Math.round(finite(s.bench, 6)), 0, 20), superflex: bounded(Math.round(finite(s.superflex)), 0, 4),
     simulations: bounded(Math.round(finite(s.simulations, 12)), 4, 32), riskTolerance: bounded(finite(s.riskTolerance, .15), 0, 1),
+    recommendationPolicy:s.recommendationPolicy==='lookahead'?'lookahead':'roster-value',
     keeperRules: { ...DEFAULT_KEEPER_RULES, ...s.keeperRules } };
 }
 export function rosterSize(s: LeagueSettings) { return Object.values(s.starters).reduce((a, b) => a + b, 0) + (s.superflex ?? 0) + (s.bench ?? 6); }
@@ -64,6 +66,7 @@ export function evaluatePlayer(p: Player, s: LeagueSettings, context: DraftConte
       else if (weight !== (base[stat] ?? 0)) issues.push(`Missing ${stat} projection; custom scoring incomplete`);
     }
   }
+  const bonus=estimateBonuses(p,s);points+=bonus.points;issues.push(...bonus.issues);
   if (!p.pointsByScoring?.[s.scoring] && p.projectionScoring && p.projectionScoring !== s.scoring) issues.push('Scoring mismatch: refresh projections');
   if(p.rankingsScoring && p.rankingsScoring!==s.scoring)issues.push('Rankings scoring mismatch: refresh the feed');
   if(p.rankingsUpdatedAt && (context.now??Date.now())-Date.parse(p.rankingsUpdatedAt)>48*3600000)issues.push('Provider rankings are over 48 hours old');
@@ -87,7 +90,7 @@ export function evaluatePlayer(p: Player, s: LeagueSettings, context: DraftConte
   const relativeSpread = expertSpread!==undefined ? bounded(expertSpread / Math.max(12, p.consensusRank ?? 40), .06, .35) : .18;
   // Scenario dispersion is a disclosed sensitivity assumption, not a calibrated outcome probability.
   const uncertainty = bounded(p.risk?.volatility ?? relativeSpread + (p.injuryStatus ? .08 : 0) + (issues.some(i=>i.includes('news:')) ? .03 : 0), .02, .7);
-  return { ...p, value: Math.max(0, finite(points)), uncertainty, issues };
+  return { ...p, value: Math.max(0, finite(points)), uncertainty, issues,estimatedBonusPoints:bonus.points,bonusDetails:bonus.details };
 }
 
 type Lineup = { points: number; used: Set<string>; open: string[] };
@@ -116,13 +119,34 @@ export function rosterValue(roster: EvaluatedPlayer[], s: LeagueSettings, replac
   const insurance = depth.reduce((v,p) => { const n = counts[p.pos] ?? 0; counts[p.pos] = n+1; return v + Math.max(0, p.value-replacement[p.pos]) * .12 / (n+1); }, 0);
   return full.points - byeLoss + insurance;
 }
+export function rosterOutcomeValue(observed:EvaluatedPlayer[],outcomes:Map<string,EvaluatedPlayer>,s:LeagueSettings,replacement:Record<Position,number>):number {
+  const combined=filledRoster(observed,s,replacement);
+  const score=(lineup:Lineup)=>combined.reduce((sum,p)=>sum+(lineup.used.has(p.id)?(outcomes.get(p.id)?.value??p.value):0),0);
+  const full=assignLineup(combined,s);let value=score(full);
+  // Select starters and bye substitutes using information available before outcomes.
+  // Do not grade a hindsight-optimal lineup inside rollouts either.
+  for(const bye of new Set(observed.map(p=>p.bye).filter(b=>b>0)))value+=(score(assignLineup(combined,s,bye))-score(full))/17;
+  const counts:Partial<Record<Position,number>>={};
+  for(const p of observed.filter(p=>!full.used.has(p.id)).sort((a,b)=>b.value-a.value)){
+    const n=counts[p.pos]??0;counts[p.pos]=n+1;
+    if(p.value>replacement[p.pos])value+=((outcomes.get(p.id)?.value??p.value)-replacement[p.pos])*.12/(n+1);
+  }
+  return value;
+}
 export function canDraft(roster: EvaluatedPlayer[], player: EvaluatedPlayer, s: LeagueSettings): boolean {
   if (roster.length >= rosterSize(s) || roster.some(p => p.id === player.id)) return false;
   if (roster.filter(p => p.pos === player.pos).length >= (s.positionLimits?.[player.pos] ?? Infinity)) return false;
   const next = [...roster, player];
   return assignLineup(next, s).open.length <= rosterSize(s) - next.length;
 }
-function market(p: EvaluatedPlayer) { return p.adp > 0 && p.adp < 900 ? p.adp : p.consensusRank && p.consensusRank < 900 ? p.consensusRank : 700; }
+export function replacementLevels(pool:EvaluatedPlayer[],s:LeagueSettings,teams:number):Record<Position,number> {
+  return Object.fromEntries(POS.map(pos=>{
+    const group=pool.filter(p=>p.pos===pos).sort((a,b)=>b.value-a.value);
+    const demand=teams*(s.starters[pos]+(flex.has(pos)?s.starters.FLEX/3:0)+(pos==='QB'?(s.superflex??0):0)+(s.bench??0)*(pos==='RB'||pos==='WR'?.35:pos==='TE'||pos==='QB'?.12:.03));
+    return [pos,group[Math.min(group.length-1,Math.floor(demand))]?.value??0];
+  })) as Record<Position,number>;
+}
+function market(p: Player) { return p.adp > 0 && p.adp < 900 ? p.adp : p.consensusRank && p.consensusRank < 900 ? p.consensusRank : 700; }
 function random(seed: number, key: string) { let h = seed | 0; for (let i=0;i<key.length;i++) h = Math.imul(h ^ key.charCodeAt(i), 16777619); h = Math.imul(h ^ h >>> 16, 2246822507); return ((h ^ h >>> 13) >>> 0) / 4294967296; }
 
 export function keeperPortfolio(roster: EvaluatedPlayer[], contracts: Map<string, number>, s: LeagueSettings, pool: EvaluatedPlayer[], teams: number): number {
@@ -215,11 +239,7 @@ export function analyzeDraft(players: Player[], allDrafted: DraftedPlayer[], inp
   empty.excluded=players.length-pool.length; empty.eligible=pool.length;
   if (!pool.length) { warnings.push('No players have usable projections. Refresh data before drafting.'); return empty; }
   const available = pool.filter(p=>!chosen.has(p.id));
-  const replacement = Object.fromEntries(POS.map(pos=> {
-    const group=pool.filter(p=>p.pos===pos).sort((a,b)=>b.value-a.value);
-    const demand=teams.length*(s.starters[pos]+(flex.has(pos)?s.starters.FLEX/3:0)+(pos==='QB'?(s.superflex??0):0)+(s.bench??0)*(pos==='RB'||pos==='WR'?.35:pos==='TE'||pos==='QB'?.12:.03));
-    return [pos,group[Math.min(group.length-1,Math.floor(demand))]?.value??0];
-  })) as Record<Position,number>;
+  const replacement = replacementLevels(pool,s,teams.length);
   if (available.length < total-drafted.length) warnings.push('Projection coverage is smaller than the remaining draft. Some simulated rosters may be incomplete.');
   const baseValue=rosterValue(myRoster,s,replacement);
   const keeperWeight=keeperMode?(s.mode==='contend'?.15:s.mode==='rebuild'?.5:.3):0;
@@ -238,12 +258,13 @@ export function analyzeDraft(players: Player[], allDrafted: DraftedPlayer[], inp
   const outcomes=new Map(candidates.map(p=>[p.id,[] as number[]])); const plans=new Map<string,string[]>();
   const survived=new Map(candidates.map(p=>[p.id,0])); const reached=new Map(candidates.map(p=>[p.id,0])); const nextOptions=new Map<string,string[]>();
   const marketOrder=available.slice().sort((a,b)=>market(a)-market(b));
+  // Cache observable projection values across worlds; random outcomes are never inputs to decisions.
+  const valueCache=new Map<string,number>();
   const runCounts: Partial<Record<Position,number>>={};
   for(const d of drafted.filter(d=>d.kind==='draft').sort((a,b)=>b.pick-a.pick).slice(0,teams.length)) {const p=idLookup.get(d.playerId)??names.get(nameKey(d.playerName));if(p)runCounts[p.pos]=(runCounts[p.pos]??0)+1;}
   for(let world=0;world<worlds;world++) {
     const worldSeed=seed+world*7919;
     const worldPlayers=new Map(pool.map(p=>[p.id,{...p,value:p.value*Math.max(.2,1+(random(worldSeed,p.id)-.5)*2*p.uncertainty)}]));
-    const valueCache=new Map<string,number>();
     const valueOf=(roster:EvaluatedPlayer[])=>{const key=roster.map(p=>p.id).sort().join('|');const cached=valueCache.get(key);if(cached!==undefined)return cached;const value=rosterValue(roster,s,replacement);valueCache.set(key,value);return value;};
     const choose=(remaining:EvaluatedPlayer[],roster:EvaluatedPlayer[],pick:number,user:boolean) => {
       const short=remaining.slice(0,22); for(const pos of POS) { const p=remaining.find(p=>p.pos===pos);if(p&&!short.includes(p))short.push(p); }
@@ -256,23 +277,25 @@ export function analyzeDraft(players: Player[], allDrafted: DraftedPlayer[], inp
       } return best;
     };
     // Neutral wait branch: opponents draft, while your first choice is deferred. This is a sensitivity estimate, not a calibrated probability.
-    {const removed=new Set<string>();const rs=new Map([...rosters].map(([t,r])=>[t,r.map(p=>worldPlayers.get(p.id)??p)]));
-      for(let pick=current;pick<(next??target+1);pick++){if(used.has(pick)||reserved.has(pick))continue;const team=ownerAt(pick,teams);if(team===mine){if(pick===target)for(const p of candidates)if(!removed.has(p.id))reached.set(p.id,reached.get(p.id)!+1);continue;}const p=choose(marketOrder.filter(p=>!removed.has(p.id)).map(p=>worldPlayers.get(p.id)!),rs.get(team)!,pick,false);if(p){removed.add(p.id);rs.get(team)!.push(p);}}
+    {const removed=new Set<string>();const rs=new Map([...rosters].map(([t,r])=>[t,[...r]]));
+      for(let pick=current;pick<(next??target+1);pick++){if(used.has(pick)||reserved.has(pick))continue;const team=ownerAt(pick,teams);if(team===mine){if(pick===target)for(const p of candidates)if(!removed.has(p.id))reached.set(p.id,reached.get(p.id)!+1);continue;}const p=choose(marketOrder.filter(p=>!removed.has(p.id)),rs.get(team)!,pick,false);if(p){removed.add(p.id);rs.get(team)!.push(p);}}
       for(const p of candidates)if(!removed.has(p.id))survived.set(p.id,survived.get(p.id)!+1);
     }
     for(const candidate of candidates) {
-      const removed=new Set<string>(); const rs=new Map([...rosters].map(([t,r])=>[t,r.map(p=>worldPlayers.get(p.id)??p)])); const cs=new Map(contracts);const plan:string[]=[];let chosenCandidate=false;
+      const removed=new Set<string>(); const rs=new Map([...rosters].map(([t,r])=>[t,[...r]])); const cs=new Map(contracts);const plan:string[]=[];let chosenCandidate=false;
       for(let pick=current;pick<=total;pick++) {
         if(used.has(pick)||reserved.has(pick))continue;const team=ownerAt(pick,teams);const roster=rs.get(team)!;
         if(roster.length>=rosterSize(s))continue;
-        const remaining=marketOrder.filter(p=>!removed.has(p.id)).map(p=>worldPlayers.get(p.id)!);
+        const remaining=marketOrder.filter(p=>!removed.has(p.id));
         let selected:EvaluatedPlayer|undefined;
-        if(team===mine&&pick===target&&!removed.has(candidate.id)){selected=worldPlayers.get(candidate.id);chosenCandidate=true;}
+        if(team===mine&&pick===target&&!removed.has(candidate.id)){selected=candidate;chosenCandidate=true;}
         else selected=choose(remaining,roster,pick,team===mine);
         if(!selected)continue;removed.add(selected.id);roster.push(selected);cs.set(selected.id,Math.ceil(pick/teams.length));
         if(team===mine) {if(plan.length<3)plan.push(`R${Math.ceil(pick/teams.length)}: ${selected.name}`);if(pick===next){const list=nextOptions.get(candidate.id)??[];list.push(selected.name);nextOptions.set(candidate.id,list);}}
       }
-      const final=rs.get(mine)!;let value=rosterValue(final,s,replacement);
+      const final=rs.get(mine)!;
+      // Draft choices only see projections. Outcome uncertainty is applied after the roster is complete.
+      let value=rosterOutcomeValue(final,worldPlayers,s,replacement);
       // Keeper option value is evaluated on the completed portfolio, never added for every player independently.
       if(keeperWeight)value+=keeperWeight*keeperPortfolio(final,cs,s,pool,teams.length);
       if(assignLineup(final,s).open.length)value-=assignLineup(final,s).open.length*50;
@@ -291,7 +314,7 @@ export function analyzeDraft(players: Player[], allDrafted: DraftedPlayer[], inp
     const marginal=immediate.get(p.id)??0;
     return {...p,score:mean-spread*s.riskTolerance!,projectedValue:p.value,marginalPoints:marginal,replacementPoints:replacement[p.pos],keeperValue,nextKeeperRound,survival,nextOption,nextPick:next,plan:plans.get(p.id)??[],spread,confidence:'low' as const,issues,evaluated:true,
       components:{winNow:bounded(marginal,0,100),dynasty:bounded(keeperValue,0,100),scarcity:bounded(p.value-replacement[p.pos],0,100),rosterFit:bounded(marginal,0,100),urgency:(1-survival)*100},
-      rationale:[`${marginal.toFixed(1)} projected roster-value gain now, including lineup, bye coverage and depth`,next?`Model-only chance of lasting to pick ${next}: ${Math.round(survival*100)}%`:'Your final available selection',nextOption?`Example follow-up: ${nextOption}`:'No later pick modeled',...(keeperMode?[nextKeeperRound?`Next-year keeper cost R${nextKeeperRound}; ${keeperValue.toFixed(1)} discounted portfolio option value`:'Ineligible to keep next year under the configured round-one rule']:[])]};
+      rationale:[`${marginal.toFixed(1)} projected roster-value gain now, including lineup, bye coverage and depth`,...(p.bonusDetails??[]),next?`Model-only chance of lasting to pick ${next}: ${Math.round(survival*100)}%`:'Your final available selection',nextOption?`Example follow-up: ${nextOption}`:'No later pick modeled',...(keeperMode?[nextKeeperRound?`Next-year keeper cost R${nextKeeperRound}; ${keeperValue.toFixed(1)} discounted portfolio option value`:'Ineligible to keep next year under the configured round-one rule']:[])]};
   }).sort((a,b)=>b.score-a.score||a.id.localeCompare(b.id));
   // Do not let small, noisy rollout differences displace the roster-value baseline.
   const baseline=legal.slice().sort((a,b)=>(immediate.get(b.id)??0)-(immediate.get(a.id)??0)||market(a)-market(b))[0];
@@ -301,8 +324,14 @@ export function analyzeDraft(players: Player[], allDrafted: DraftedPlayer[], inp
     recommendations.sort((a,b)=>(b.conservativeEdge??0)-(a.conservativeEdge??0)||Number(!!b.baseline)-Number(!!a.baseline)||b.score-a.score);
     if(recommendations[0].baseline)recommendations[0].rationale.push('No alternative showed a clear simulated improvement over the immediate roster-value baseline');
   }
+  if(s.recommendationPolicy!=='lookahead'){
+    recommendations.sort((a,b)=>Number(!!b.baseline)-Number(!!a.baseline)||b.marginalPoints-a.marginalPoints||market(a)-market(b));
+    if(baselineRec)baselineRec.rationale.push('Evidence gate: roster-value recommendation. Experimental lookahead has not established a reliable historical advantage over this policy.');
+    warnings.push('Roster-value policy selected. Lookahead plans and keeper option values are exploratory and do not override the pick. Select experimental lookahead explicitly in Setup to use those model assumptions.');
+  }else warnings.push('Experimental lookahead selected: no reliable historical advantage over roster-value drafting has been established.');
   const best=recommendations[0], runner=recommendations[1];
   if(best&&runner){const a=outcomes.get(best.id)!,b=outcomes.get(runner.id)!;const differences=a.map((v,i)=>v-b[i]);const mean=differences.reduce((x,y)=>x+y,0)/worlds;const sd=Math.sqrt(differences.reduce((x,y)=>x+(y-mean)**2,0)/Math.max(1,worlds-1));const error=sd/Math.sqrt(worlds);const dataConcerns=best.issues.filter(x=>/missing|unverified|unavailable|mismatch|six hours|designation|news/i.test(x)).length;best.confidence=mean>2*error&&mean>5&&dataConcerns<2&&s.rulesConfirmed?'high':mean>error&&dataConcerns<4?'medium':'low';empty.comparison=`${(best.score-runner.score).toFixed(1)} model-value edge over ${runner.name}. Paired scenario difference ${mean.toFixed(1)} ± ${(2*error).toFixed(1)} (sampling uncertainty only).`;}
+  if(best){best.confidence='low';empty.comparison=s.recommendationPolicy==='lookahead'?`Experimental model comparison. ${empty.comparison??''} These within-model differences do not establish real-world superiority.`:'Roster-value policy: recommendations prioritize projected lineup, bye coverage and useful depth. Historical superiority is not established; scenario plans are exploratory.';}
   warnings.push('Simulation probabilities and risk ranges are sensitivity estimates, not calibrated forecasts or guarantees.');
   if(best && warnings.some(w=>/not confirmed|Unmatched|Unknown|pending|Duplicate|overlaps|no draft pick|Refresh failed|smaller/.test(w)))best.confidence='low';
   if(context.lastSync&&(context.now??Date.now())-Date.parse(context.lastSync)>6*3600000)warnings.push('Saved feed is over six hours old. Refresh before selecting.');

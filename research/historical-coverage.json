@@ -1,0 +1,124 @@
+[
+  {
+    "year": 2023,
+    "scoring": "standard",
+    "asOf": "2023-09-01",
+    "players": 540,
+    "unmatched": [
+      {
+        "name": "Tyler Davis",
+        "rank": 301.0,
+        "pos": "K"
+      },
+      {
+        "name": "Scotty Washington",
+        "rank": 365.0,
+        "pos": "WR"
+      }
+    ],
+    "unmatchedTop180": [],
+    "trainingYears": [
+      2021,
+      2022
+    ]
+  },
+  {
+    "year": 2024,
+    "scoring": "standard",
+    "asOf": "2024-08-30",
+    "players": 589,
+    "unmatched": [],
+    "unmatchedTop180": [],
+    "trainingYears": [
+      2021,
+      2022,
+      2023
+    ]
+  },
+  {
+    "year": 2025,
+    "scoring": "standard",
+    "asOf": "2025-08-08",
+    "players": 475,
+    "unmatched": [
+      {
+        "name": "Marcus Yarns",
+        "rank": 331.5,
+        "pos": "RB"
+      },
+      {
+        "name": "Chris Tyree",
+        "rank": 346.67,
+        "pos": "RB"
+      }
+    ],
+    "unmatchedTop180": [],
+    "trainingYears": [
+      2021,
+      2022,
+      2023,
+      2024
+    ]
+  },
+  {
+    "year": 2023,
+    "scoring": "ppr",
+    "asOf": "2023-09-01",
+    "players": 540,
+    "unmatched": [
+      {
+        "name": "Tyler Davis",
+        "rank": 301.0,
+        "pos": "K"
+      },
+      {
+        "name": "Scotty Washington",
+        "rank": 365.0,
+        "pos": "WR"
+      }
+    ],
+    "unmatchedTop180": [],
+    "trainingYears": [
+      2021,
+      2022
+    ]
+  },
+  {
+    "year": 2024,
+    "scoring": "ppr",
+    "asOf": "2024-08-30",
+    "players": 589,
+    "unmatched": [],
+    "unmatchedTop180": [],
+    "trainingYears": [
+      2021,
+      2022,
+      2023
+    ]
+  },
+  {
+    "year": 2025,
+    "scoring": "ppr",
+    "asOf": "2025-08-08",
+    "players": 475,
+    "unmatched": [
+      {
+        "name": "Marcus Yarns",
+        "rank": 331.5,
+        "pos": "RB"
+      },
+      {
+        "name": "Chris Tyree",
+        "rank": 346.67,
+        "pos": "RB"
+      }
+    ],
+    "unmatchedTop180": [],
+    "trainingYears": [
+      2021,
+      2022,
+      2023,
+      2024
+    ]
+  }
+]

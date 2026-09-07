@@ -2,7 +2,7 @@ import { readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import ts from 'typescript';
 import {performance} from 'node:perf_hooks';
-async function moduleAt(path){const text=await readFile(new URL(path,import.meta.url),'utf8');const js=ts.transpileModule(text,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText;return import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);}
+import {loadModule as moduleAt} from './load-module.mjs';
 assert.ok(process.env.FANTASYPROS_API_KEY,'An authorized runtime key is required; never commit it');
 const {GET}=await moduleAt('../app/api/fantasypros/route.ts');const {analyzeDraft,normalizeSettings}=await moduleAt('../lib/optimizer.ts');
 for(const scoring of ['STD','PPR']){

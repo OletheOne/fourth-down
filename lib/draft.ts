@@ -58,10 +58,13 @@ export type LeagueSettings = {
   positionLimits?: Partial<Record<Position, number>>;
   customScoring?: Record<string, number>;
   positionScoring?: Partial<Record<Position, Record<string, number>>>;
+  bonusRules?: { fieldGoals?: number[]; pointsAllowed?: number[] };
+  scoringSource?: string;
   rulesConfirmed?: boolean;
   keeperRules?: { limit: number; escalation: number; horizon: number; discount: number; firstRound: 'ineligible' | 'round-one'; collision: 'earlier' | 'reject' };
   riskTolerance?: number;
   simulations?: number;
+  recommendationPolicy?: 'roster-value' | 'lookahead';
 };
 
 const makeId = (name: string) => name.toLowerCase().replace(/[^a-z0-9]+/g, '-');

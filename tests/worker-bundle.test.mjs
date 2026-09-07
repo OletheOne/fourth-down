@@ -7,5 +7,5 @@ const source=await readFile(new URL(file,dir),'utf8');let output;
 const self={postMessage(value){output=value;}};
 vm.runInNewContext(source,{self,console,Date,Map,Set,Math},{timeout:20000});
 self.onmessage({data:{players:[],drafted:[],teams:['A','B'],settings:{userTeam:'A',draftSlot:1,scoring:'ppr',mode:'contend',starters:{QB:1,RB:1,WR:1,TE:1,FLEX:1,K:0,DST:0}},context:{draftMode:'traditional'}}});
-assert.ok(output.analysis);assert.equal(output.analysis.version,'roster-lookahead-2');assert.ok(output.analysis.warnings.some(w=>w.includes('No players')));
+assert.ok(output.analysis);assert.equal(output.analysis.version,'roster-lookahead-3');assert.ok(output.analysis.warnings.some(w=>w.includes('No players')));
 console.log('Production worker bundle message contract passed.');

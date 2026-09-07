@@ -1,15 +1,14 @@
-// Reproducible synthetic holdout, not historical NFL validation. No tuning on these outcomes.
+// Retired synthetic regression fixture, NOT a holdout or evidence of advantage.
 // Compare the first recommendation, followed by an identical legal positional-value policy.
 import { readFile } from 'node:fs/promises';
 import assert from 'node:assert/strict';
 import ts from 'typescript';
-const source=await readFile(new URL('../lib/optimizer.ts',import.meta.url),'utf8');
-const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ES2022}}).outputText;
-const {analyzeDraft,evaluatePlayer,normalizeSettings,assignLineup,canDraft,ownerAt}=await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);
+import {loadModule} from './load-module.mjs';
+const {analyzeDraft,evaluatePlayer,normalizeSettings,assignLineup,canDraft,ownerAt}=await loadModule('../lib/optimizer.ts');
 const schemes=['ADP','ECR','Positional value','Lookahead'];const totals=Object.fromEntries(schemes.map(n=>[n,[]]));
 const teams=['A','B','C','D'];const now=Date.parse('2026-09-06T20:00:00Z');
 const random=(seed,key)=>{let n=seed;for(const c of key)n=Math.imul(n^c.charCodeAt(0),16777619);return((n^n>>>16)>>>0)/4294967296;};
-const settings=normalizeSettings({userTeam:'A',draftSlot:1,scoring:'ppr',mode:'contend',starters:{QB:1,RB:1,WR:2,TE:1,FLEX:1,K:0,DST:0},bench:2,simulations:8,rulesConfirmed:true});
+const settings=normalizeSettings({userTeam:'A',draftSlot:1,scoring:'ppr',mode:'contend',starters:{QB:1,RB:1,WR:2,TE:1,FLEX:1,K:0,DST:0},bench:2,simulations:8,rulesConfirmed:true,recommendationPolicy:'lookahead'});
 let violations=0;let cases=0;
 for(let fixture=0;fixture<12;fixture++) {
   const players=Array.from({length:100},(_,i)=>{const pos=['QB','RB','WR','TE'][i%4];const rank=Math.floor(i/4);const p={id:`F${fixture}P${i}`,name:`F${fixture}P${i}`,pos,team:'BUF',projectedPoints:Math.max(25,({QB:330,RB:270,WR:265,TE:220}[pos])-rank*(5+random(fixture+1,pos)*13)),adp:i+1,consensusRank:i+1+Math.round((random(91,`${fixture}:${i}`)-.5)*8),dynastyRank:i+1,age:25,bye:5+i%8,rankStdDev:5,hasProjection:true,active:true,season:2026,fetchedAt:new Date(now).toISOString(),projectionUpdatedAt:new Date(now).toISOString()};return p;});
@@ -44,5 +43,5 @@ for(let fixture=0;fixture<12;fixture++) {
 }
 assert.equal(violations,0,'Every completed roster must remain legal');
 const means=Object.fromEntries(schemes.map(s=>[s,Number((totals[s].reduce((a,b)=>a+b,0)/cases).toFixed(2))]));
-const paired=Object.fromEntries(schemes.filter(s=>s!=='Lookahead').map(s=>{const dif=totals.Lookahead.map((v,i)=>v-totals[s][i]);const mean=dif.reduce((a,b)=>a+b,0)/cases;const sd=Math.sqrt(dif.reduce((a,b)=>a+(b-mean)**2,0)/(cases-1));return[s,{meanDifference:Number(mean.toFixed(2)),twoStandardErrors:Number((2*sd/Math.sqrt(cases)).toFixed(2))}];}));
-console.log(JSON.stringify({kind:'Synthetic first-pick holdout; not historical validation',cases,violations,meanRealizedStarterPoints:means,pairedLookaheadDifference:paired},null,2));
+const paired=Object.fromEntries(schemes.filter(s=>s!=='Lookahead').map(s=>{const dif=totals.Lookahead.map((v,i)=>v-totals[s][i]);const clusters=Array.from({length:12},(_,i)=>dif.slice(i*8,i*8+8).reduce((a,b)=>a+b,0)/8);const mean=clusters.reduce((a,b)=>a+b,0)/clusters.length;const sd=Math.sqrt(clusters.reduce((a,b)=>a+(b-mean)**2,0)/(clusters.length-1));return[s,{meanDifference:Number(mean.toFixed(2)),fixtureCluster95HalfWidth:Number((2.201*sd/Math.sqrt(clusters.length)).toFixed(2))}];}));
+console.log(JSON.stringify({kind:'Retired synthetic first-pick regression only; not validation',cases,independentFixtureClusters:12,violations,meanRealizedStarterPoints:means,pairedLookaheadDifference:paired,warning:'Sampling uncertainty clusters by fixture. This repeatedly used synthetic regression suite is not evidence of historical advantage.'},null,2));

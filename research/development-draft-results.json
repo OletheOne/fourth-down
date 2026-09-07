@@ -1,0 +1,97 @@
+{
+  "summary": {
+    "seasons": [
+      2023
+    ],
+    "independentSeasons": 1,
+    "draftContexts": 6,
+    "seasonDifferences": [
+      {
+        "year": 2023,
+        "versusRosterValue": 1.9800000000000182,
+        "versusECR": 88.23999999999994
+      }
+    ],
+    "limitation": "2023 development diagnostic before the final lineup-grading correction; not a holdout and not the final policy. Retained to document evaluation history."
+  },
+  "results": [
+    {
+      "year": 2023,
+      "scoring": "ppr",
+      "slot": 1,
+      "style": "market",
+      "points": {
+        "ECR": 1538.5,
+        "Roster value": 1835.18,
+        "Lookahead": 1769.64
+      },
+      "lookaheadDepartures": 1,
+      "elapsedMs": 10905
+    },
+    {
+      "year": 2023,
+      "scoring": "ppr",
+      "slot": 1,
+      "style": "needs",
+      "points": {
+        "ECR": 1362.2,
+        "Roster value": 1674.92,
+        "Lookahead": 1762.32
+      },
+      "lookaheadDepartures": 2,
+      "elapsedMs": 11140
+    },
+    {
+      "year": 2023,
+      "scoring": "ppr",
+      "slot": 6,
+      "style": "market",
+      "points": {
+        "ECR": 1793.22,
+        "Roster value": 1897.12,
+        "Lookahead": 1708.02
+      },
+      "lookaheadDepartures": 3,
+      "elapsedMs": 11520
+    },
+    {
+      "year": 2023,
+      "scoring": "ppr",
+      "slot": 6,
+      "style": "needs",
+      "points": {
+        "ECR": 1509.32,
+        "Roster value": 1493.82,
+        "Lookahead": 1456.32
+      },
+      "lookaheadDepartures": 3,
+      "elapsedMs": 11902
+    },
+    {
+      "year": 2023,
+      "scoring": "ppr",
+      "slot": 12,
+      "style": "market",
+      "points": {
+        "ECR": 1660.34,
+        "Roster value": 1563.58,
+        "Lookahead": 1706.24
+      },
+      "lookaheadDepartures": 3,
+      "elapsedMs": 11030
+    },
+    {
+      "year": 2023,
+      "scoring": "ppr",
+      "slot": 12,
+      "style": "needs",
+      "points": {
+        "ECR": 1819.5,
+        "Roster value": 1736.02,
+        "Lookahead": 1809.98
+      },
+      "lookaheadDepartures": 4,
+      "elapsedMs": 10830
+    }
+  ]
+}
