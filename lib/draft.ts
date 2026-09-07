@@ -45,6 +45,7 @@ export type DraftedPlayer = {
   originalRound?: number;
   seasonsKept?: number;
   costRound?: number;
+  pickInRound?: number;
 };
 
 export type LeagueSettings = {
@@ -55,6 +56,7 @@ export type LeagueSettings = {
   starters: Record<Position | 'FLEX', number>;
   superflex?: number;
   bench?: number;
+  irSlots?: number;
   positionLimits?: Partial<Record<Position, number>>;
   customScoring?: Record<string, number>;
   positionScoring?: Partial<Record<Position, Record<string, number>>>;

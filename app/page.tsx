@@ -12,8 +12,9 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@
 import { demoPlayers, type DraftedPlayer, type LeagueSettings, parsePlayerCsv, type Player } from '@/lib/draft';
 import { normalizeSettings, type DraftAnalysis, nameKey, keeperCost, resolveKeeperContracts } from '@/lib/optimizer';
 import { EngineSettings, PlayerRiskEditor } from '@/components/engine-settings';
-import { applyDiscordRules } from '@/lib/discord-rules';
+import { prepareProfileState, validateKeeperSnapshot, KEEPER_PROFILE_ID, TRADITIONAL_PROFILE_ID, KEEPER_PRESET_REVISION, presetKeepers, presetPlayers, findKeeperPlayer, mergeKeeperPicks, identity } from '@/lib/keeper-preset';
 import DraftWorker from '../lib/draft.worker?worker';
+import {KeeperSetup,ConfirmedKeepers} from '@/components/keeper-preset';
 
 const defaultSettings: LeagueSettings = {
   userTeam: 'Team 6', draftSlot: 6, scoring: 'ppr', mode: 'balanced',
@@ -81,26 +82,33 @@ export default function Home() {
   const [activeProfileId, setActiveProfileId] = useState('discord-league');
   const [newProfileName, setNewProfileName] = useState('');
 
-  useEffect(()=>{
-    // Only the verified league/team, once. Never apply this to a mock profile or
-    // reorder teams using FantasyPros team IDs (they are not draft slots).
-    if(hydrated && (espnLeagueName==='Discord League'||activeProfileId==='discord-league') && settings.userTeam==='Super Smash Burrows' && !settings.scoringSource){
-      setSettings(applyDiscordRules(settings));
-      setNotice('Applied verified Discord scoring and starter slots, including estimated FG-distance and DST points-allowed bonuses. Your picks, team order and keeper contracts were preserved. Review keeper edge-case rules in Setup.');
-    }
-  },[hydrated,activeProfileId,espnLeagueName,settings]);
-
   useEffect(() => {
     let list: LeagueProfile[] = [{ id: 'discord-league', name: 'Discord League' }];
-    try { list = JSON.parse(localStorage.getItem('fourth-down-profiles') || 'null') || list; } catch {}
-    const active = localStorage.getItem('fourth-down-active-profile') || list[0].id;
+    try { const parsed=JSON.parse(localStorage.getItem('fourth-down-profiles') || 'null');if(Array.isArray(parsed))list=parsed.filter(p=>p&&typeof p.id==='string'&&typeof p.name==='string'); } catch {}
+    let active = localStorage.getItem('fourth-down-active-profile') || KEEPER_PROFILE_ID;
     let raw = localStorage.getItem(`fourth-down-profile:${active}`);
     if (!raw) {
       raw = localStorage.getItem('fourth-down-state');
       if (raw) localStorage.setItem(`fourth-down-profile:${active}`, raw);
     }
+    let saved:SavedState|undefined;
+    try{saved=raw?JSON.parse(raw):undefined;}catch{}
+    if(raw&&active===KEEPER_PROFILE_ID){
+      const backupKey=`fourth-down-before-keeper-preset:${KEEPER_PRESET_REVISION}`;
+      if(!localStorage.getItem(backupKey))localStorage.setItem(backupKey,raw);
+      // Preserve a traditional draft previously stored under the Discord profile.
+      if(saved?.draftMode==='traditional'){
+        const preserved=`traditional-preserved-${KEEPER_PRESET_REVISION}`;
+        if(!localStorage.getItem(`fourth-down-profile:${preserved}`))localStorage.setItem(`fourth-down-profile:${preserved}`,raw);
+        if(!list.some(p=>p.id===preserved))list.push({id:preserved,name:'Previous traditional draft'});
+        saved=undefined;
+      }
+    }
+    if(!list.some(p=>p.id===KEEPER_PROFILE_ID))list.unshift({id:KEEPER_PROFILE_ID,name:'Discord League'});
+    if(!list.some(p=>p.id===TRADITIONAL_PROFILE_ID))list.push({id:TRADITIONAL_PROFILE_ID,name:'Traditional draft'});
+    if(!list.some(p=>p.id===active))list.push({id:active,name:'Recovered draft'});
     setProfiles(list); setActiveProfileId(active);
-    if (raw) { try { loadSavedState(JSON.parse(raw) as SavedState); } catch {} }
+    loadSavedState(saved??initialState(active),active);
     setHydrated(true);
   }, []);
   useEffect(() => {
@@ -112,20 +120,20 @@ export default function Home() {
 
   useEffect(() => {
     syncGeneration.current += 1;
-    if (!hydrated || dataSource !== 'fantasypros') return;
+    if (!hydrated || (dataSource !== 'fantasypros' && draftMode !== 'keeper')) return;
     // Refresh rankings for scoring/profile/season changes; stat totals alone do not update ECR.
     void syncFantasyPros(true);
     const timer=window.setInterval(()=>void syncFantasyPros(true),15*60*1000);
     return ()=>{window.clearInterval(timer);syncGeneration.current+=1;};
     // syncFantasyPros intentionally uses the snapshot at this profile/scoring boundary.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [hydrated, activeProfileId, settings.scoring, espnSeason, dataSource]);
+  }, [hydrated, activeProfileId, settings.scoring, espnSeason, dataSource, draftMode]);
 
   const allKeepers = drafted.filter((entry) => entry.kind === 'keeper');
   const draftPicks = drafted.filter((entry) => entry.kind === 'draft');
   const keepers = draftMode === 'keeper' ? allKeepers : [];
   const activeDrafted = draftMode === 'keeper' ? drafted : draftPicks;
-  const available = useMemo(() => players.filter((player) => player.active !== false && !activeDrafted.some((entry) => entry.playerId === player.id || nameKey(entry.playerName) === nameKey(player.name)) && !(rostersAreCurrentDraft&&leagueRosters.some(r=>r.players.some(n=>nameKey(n)===nameKey(player.name))))), [players, activeDrafted,rostersAreCurrentDraft,leagueRosters]);
+  const available = useMemo(() => players.filter((player) => player.active !== false && (draftMode!=='keeper'||player.pos!=='K') && !activeDrafted.some((entry) => entry.playerId === player.id || nameKey(entry.playerName) === nameKey(player.name)) && !(rostersAreCurrentDraft&&leagueRosters.some(r=>r.players.some(n=>nameKey(n)===nameKey(player.name))))), [players, activeDrafted,rostersAreCurrentDraft,leagueRosters,draftMode]);
   const pricedKeepers = allKeepers.filter((entry) => entry.costRound).length;
   useEffect(() => {
     if (!hydrated) return;
@@ -142,6 +150,7 @@ export default function Home() {
   const best = recommendations[0];
   const currentPick = nextOpenDraftPick(draftPicks, keepers, teams);
   const currentOwner = ownerForPick(currentPick, teams);
+  useEffect(()=>{if(draftMode==='keeper')setSelectedOwner(currentOwner);},[draftMode,currentOwner]);
   const isMyPick = currentOwner === settings.userTeam;
   const activeProfile = profiles.find((profile) => profile.id === activeProfileId) ?? profiles[0];
   const sourceLabel = dataSource === 'fantasypros' ? 'FantasyPros live' : dataSource === 'espn' ? 'ESPN data' : dataSource === 'csv' ? 'Custom CSV' : 'Demo data';
@@ -173,7 +182,7 @@ export default function Home() {
       execute: () => ({
         league: { profile: activeProfile?.name, name: espnLeagueName || undefined, draftMode, source: leagueSource, teams, settings, updatedAt: leagueSnapshotUpdatedAt || undefined },
         currentPick, currentOwner, isMyPick,
-          keepers: keepers.map((entry) => ({ player: entry.playerName ?? players.find((player) => player.id === entry.playerId)?.name ?? entry.playerId, owner: entry.owner, originalRound: entry.originalRound, seasonsKept: entry.seasonsKept, costRound: entry.costRound })),
+          keepers: keepers.map((entry) => ({ player: entry.playerName ?? players.find((player) => player.id === entry.playerId)?.name ?? entry.playerId, owner: entry.owner, originalRound: entry.originalRound, seasonsKept: entry.seasonsKept, costRound: entry.costRound, pickInRound:entry.pickInRound, overallPick:keeperBoardPick(entry,teams) })),
         picks: draftPicks.map((entry) => ({ pick: entry.pick, player: entry.playerName ?? players.find((player) => player.id === entry.playerId)?.name ?? entry.playerId, owner: entry.owner })),
         rosters: leagueRosters, analysis, analyzing, analysisError,
         recommendations: recommendations.slice(0, 5).map((player) => ({ player: player.name, position: player.pos, team: player.team, score: Number(player.score.toFixed(1)), signals: player.components, rationale: player.rationale })),
@@ -190,7 +199,9 @@ export default function Home() {
         const player = available.find((candidate) => candidate.name.toLowerCase() === values.playerName!.toString().toLowerCase());
         if (!player) throw new Error('That player is not available in the current pool.');
         const pick = currentPick;
-        setDrafted((entries) => [...entries, { playerId: player.id, playerName: player.name, owner: values.owner as string, pick, kind: 'draft' }]);
+        const entry:DraftedPlayer={playerId:player.id,playerName:player.name,owner:values.owner as string,pick,kind:'draft'};
+        if(draftMode==='keeper')mergeKeeperPicks(draftPicks,[entry],players);
+        setDrafted((entries) => [...entries, entry]);
         setNotice(`${player.name} recorded for ${values.owner}.`);
         return { recorded: true, pick, player: player.name, owner: values.owner };
       },
@@ -201,6 +212,7 @@ export default function Home() {
       inputSchema: { type: 'object', properties: { keepers: { type: 'array', items: { type: 'object', properties: { playerName: { type: 'string' }, owner: { type: 'string' }, originalRound: { type: 'number' }, seasonsKept: { type: 'number' }, costRound: { type: 'number' } }, required: ['playerName', 'owner'], additionalProperties: false }, maxItems: 36 } }, required: ['keepers'], additionalProperties: false },
       annotations: { readOnlyHint: false, untrustedContentHint: false },
       execute: (input) => {
+        if(draftMode==='keeper')throw Error('The screenshot-confirmed keeper list is preconfigured and protected.');
         const values = input as { keepers?: Array<{ playerName?: unknown; owner?: unknown; originalRound?: unknown; seasonsKept?: unknown; costRound?: unknown }> };
         if (!Array.isArray(values.keepers)) throw new Error('keepers must be an array.');
         const additions = values.keepers.map((keeper, index) => {
@@ -250,6 +262,7 @@ export default function Home() {
       },
       annotations: { readOnlyHint: false, untrustedContentHint: true },
       execute: (input) => {
+        if(draftMode==='keeper')throw Error('Keeper costs are finalized from the ESPN screenshots and cannot be overwritten by a sync.');
         const values = input as { contracts?: Array<{ playerName?: unknown; owner?: unknown; originalRound?: unknown; seasonsKept?: unknown; costRound?: unknown }> };
         if (!Array.isArray(values.contracts)) throw new Error('contracts must be an array.');
         const missing: string[] = [];
@@ -284,8 +297,8 @@ export default function Home() {
       },
       annotations: { readOnlyHint: false, untrustedContentHint: true },
       execute: (input) => {
+        if(draftMode==='keeper')throw Error('Switch to Traditional mode before syncing a mock draft. Your keeper draft is protected.');
         const snapshot = input as LeagueSnapshot;
-        setDraftMode('traditional');
         const result = applyLeagueSnapshot({ ...snapshot, keepers: [] }, 'fantasypros-mcp');
         setNotice(`${snapshot.leagueName || 'Mock draft'} synced in Traditional mode with ${snapshot.picks?.length ?? 0} picks.`);
         return { ...result, draftMode: 'traditional', profile: activeProfile?.name };
@@ -298,7 +311,13 @@ export default function Home() {
     return { players, drafted, settings, teams, espnLeagueId, espnSeason, dataSource, lastFantasyProsSync, leagueSource, leagueSnapshotUpdatedAt, leagueRosters, espnLeagueName, draftMode, dataWarnings,rostersAreCurrentDraft };
   }
 
-  function loadSavedState(saved: SavedState) {
+  function initialState(id:string):SavedState{
+    return {players:dataSource==='fantasypros'?players:demoPlayers,drafted:[],settings:{...defaultSettings},teams:[...defaultTeams],draftMode:id===KEEPER_PROFILE_ID?'keeper':'traditional',espnSeason:2026,dataSource:dataSource==='fantasypros'?'fantasypros':'demo',lastFantasyProsSync:dataSource==='fantasypros'?lastFantasyProsSync:'',leagueRosters:[],rostersAreCurrentDraft:false};
+  }
+
+  function loadSavedState(input: SavedState,profileId=activeProfileId) {
+    const base={...input,players:input.players?.length?input.players:demoPlayers,drafted:input.drafted??[],settings:input.settings??defaultSettings};
+    const saved=prepareProfileState(base,profileId);
     setFantasyProsSyncing(false);setAnalysis(null);setAnalyzing(false);setAnalysisError('');
     setPlayers(saved.players?.length ? saved.players : demoPlayers);
     setDrafted(saved.drafted ?? []);
@@ -308,16 +327,25 @@ export default function Home() {
     setDataSource(saved.dataSource ?? 'demo'); setLastFantasyProsSync(saved.lastFantasyProsSync ?? '');
     setLeagueSource(saved.leagueSource ?? 'manual'); setLeagueSnapshotUpdatedAt(saved.leagueSnapshotUpdatedAt ?? '');
     setLeagueRosters(saved.leagueRosters ?? []); setEspnLeagueName(saved.espnLeagueName ?? '');
-    setDraftMode(saved.draftMode ?? 'keeper'); setSelectedPlayer(''); setPlayerQuery(''); setKeepersText(''); setNotice('');
+    setDraftMode(saved.draftMode ?? 'traditional'); setSelectedPlayer(''); setPlayerQuery(''); setKeepersText(''); setBulkPicksText('');setLeagueSnapshotText('');setNotice('');
+    setSelectedOwner(ownerForPick(nextOpenDraftPick(saved.drafted.filter(d=>d.kind==='draft'),saved.draftMode==='keeper'?saved.drafted.filter(d=>d.kind==='keeper'):[],saved.teams??defaultTeams),saved.teams??defaultTeams));
   }
 
   function switchLeagueProfile(id: string) {
     if (id === activeProfileId) return;
     localStorage.setItem(`fourth-down-profile:${activeProfileId}`, JSON.stringify(currentSavedState()));
     const raw = localStorage.getItem(`fourth-down-profile:${id}`);
-    setHydrated(false); setActiveProfileId(id);
-    if (raw) loadSavedState(JSON.parse(raw) as SavedState);
+    syncGeneration.current++;setHydrated(false); setActiveProfileId(id);
+    let saved:SavedState|undefined;try{saved=raw?JSON.parse(raw):undefined;}catch{}
+    loadSavedState(saved??initialState(id),id);
+    if(id!==KEEPER_PROFILE_ID)localStorage.setItem('fourth-down-last-traditional-profile',id);
     window.setTimeout(() => setHydrated(true), 0);
+  }
+
+  function switchDraftMode(mode:DraftMode){
+    if(mode===draftMode)return;
+    const last=localStorage.getItem('fourth-down-last-traditional-profile');
+    switchLeagueProfile(mode==='keeper'?KEEPER_PROFILE_ID:(last&&last!==KEEPER_PROFILE_ID&&profiles.some(p=>p.id===last)?last:TRADITIONAL_PROFILE_ID));
   }
 
   function createLeagueProfile() {
@@ -332,14 +360,17 @@ export default function Home() {
     };
     localStorage.setItem(`fourth-down-profile:${activeProfileId}`, JSON.stringify(currentSavedState()));
     localStorage.setItem(`fourth-down-profile:${id}`, JSON.stringify(initial));
-    setHydrated(false); setProfiles((current) => [...current, profile]); setActiveProfileId(id); loadSavedState(initial); setNewProfileName('');
+    syncGeneration.current++;setHydrated(false); setProfiles((current) => [...current, profile]); setActiveProfileId(id); loadSavedState(initial,id); setNewProfileName('');
+    localStorage.setItem('fourth-down-last-traditional-profile',id);
     window.setTimeout(() => { setHydrated(true); setNotice(`${name} created in Traditional mode.`); }, 0);
   }
 
   function addDraftPick() {
     if (!selectedPlayer) return;
-    const player = players.find((candidate) => candidate.id === selectedPlayer);
-    const entry: DraftedPlayer = { playerId: selectedPlayer, playerName: player?.name, owner: selectedOwner, pick: currentPick, kind: 'draft' };
+    const player = available.find((candidate) => candidate.id === selectedPlayer);
+    if(!player){setNotice('That player is no longer available.');return;}
+    const entry: DraftedPlayer = { playerId: selectedPlayer, playerName: player?.name, owner: draftMode==='keeper'?currentOwner:selectedOwner, pick: currentPick, kind: 'draft' };
+    if(draftMode==='keeper'){try{mergeKeeperPicks(draftPicks,[entry],players);}catch(error){setNotice(error instanceof Error?error.message:'Invalid pick.');return;}}
     setDrafted((entries) => [...entries, entry]);
     setSelectedPlayer(''); setPlayerQuery('');
     setSelectedOwner(ownerForPick(nextOpenDraftPick([...draftPicks, entry], keepers, teams), teams));
@@ -347,6 +378,7 @@ export default function Home() {
   }
 
   function importKeepers() {
+    if(draftMode==='keeper'){setNotice('All 32 keepers are already preconfigured from your screenshots.');return;}
     const rows = keepersText.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
     const additions: DraftedPlayer[] = [];
     const missing: string[] = [];
@@ -389,12 +421,16 @@ export default function Home() {
       additions.push(entry); simulatedPicks.push(entry);
       if (player) used.add(player.id); else outsidePool.push(cleaned);
     });
-    setDrafted((entries) => [...entries, ...additions]);
+    if(draftMode==='keeper'){
+      try{const merged=mergeKeeperPicks(draftPicks,additions,players);setDrafted([...presetKeepers(players),...merged]);}
+      catch(error){setNotice(error instanceof Error?error.message:'Could not import picks.');return;}
+    }else setDrafted((entries) => [...entries, ...additions]);
     if (additions.length) setBulkPicksText('');
     setNotice(outsidePool.length ? `Added all ${additions.length} picks. Outside the ranking pool: ${outsidePool.join(', ')}` : `Added ${additions.length} picks. Recommendation updated.`);
   }
 
   function importPlayers() {
+    if(draftMode==='keeper'){setNotice('Keeper mode uses the live FantasyPros feed. Switch to Traditional mode to import custom players.');return;}
     try {
       const imported = parsePlayerCsv(csvText);
       setPlayers(imported); setDrafted([]); setDataSource('csv');
@@ -404,6 +440,14 @@ export default function Home() {
 
   function applyLeagueSnapshot(snapshot: LeagueSnapshot, source: LeagueSource = 'fantasypros-mcp') {
     if (!snapshot || !Array.isArray(snapshot.teams)) throw new Error('The league snapshot must include a teams array.');
+    if(draftMode==='keeper'){
+      validateKeeperSnapshot(snapshot);
+      const incoming=(snapshot.picks??[]).map(p=>{if(!p.pick||!p.playerName||!p.owner)throw Error('Keeper-mode draft sync requires explicit pick numbers, player names and owners.');const player=findKeeperPlayer(players,p.playerName);return {playerId:player?.id??`external-${identity(p.playerName)}`,playerName:p.playerName,owner:p.owner,pick:p.pick,kind:'draft' as const};});
+      const merged=mergeKeeperPicks(draftPicks,incoming,players);
+      setDrafted([...presetKeepers(players),...merged]);setLeagueSource(source);setLeagueSnapshotUpdatedAt(snapshot.updatedAt??new Date().toISOString());
+      setNotice(`Synced ${merged.length} live picks. Screenshot-confirmed keepers, roster rules and draft order preserved.`);
+      return {loaded:true,teams:12,keepers:32,picks:merged.length,unmatchedPlayers:incoming.filter(p=>!players.some(q=>q.id===p.playerId)).map(p=>p.playerName)};
+    }
     const syncedTeams = snapshot.teams.map((team) => typeof team === 'string' ? team.trim() : team?.name?.trim()).filter(Boolean);
     if (syncedTeams.length < 2) throw new Error('The league snapshot needs at least two named teams.');
     if (new Set(syncedTeams.map((team) => team.toLowerCase())).size !== syncedTeams.length) throw new Error('Team names must be unique.');
@@ -484,7 +528,8 @@ export default function Home() {
         const replacement = nextByName.get(nameKey(entry.playerName ?? previousPlayer?.name ?? ''));
         return replacement ? { ...entry, playerId: replacement.id, playerName: replacement.name } : entry;
       }));
-      setPlayers(current=>{const riskByName=new Map(current.filter(p=>p.risk).map(p=>[nameKey(p.name),p.risk]));return data.players!.map(p=>({...p,risk:riskByName.get(nameKey(p.name))}));}); setDataWarnings(data.warnings ?? []);
+      if(draftMode==='keeper')setDrafted(entries=>[...presetKeepers(data.players!),...entries.filter(e=>e.kind==='draft')]);
+      setPlayers(current=>{const riskByName=new Map(current.filter(p=>p.risk).map(p=>[nameKey(p.name),p.risk]));const next=data.players!.map(p=>({...p,risk:riskByName.get(nameKey(p.name))}));return draftMode==='keeper'?presetPlayers(next):next;}); setDataWarnings(data.warnings ?? []);
       setDataSource('fantasypros');
       setLastFantasyProsSync(data.updatedAt ?? new Date().toISOString());
       setNotice(`FantasyPros loaded ${data.players.length} players.${data.warnings?.length ? ` ${data.warnings.join(' ')}` : ''}`);
@@ -496,6 +541,7 @@ export default function Home() {
   }
 
   async function syncEspn() {
+    if(draftMode==='keeper'){setNotice('Keeper setup is protected. Use the FantasyPros league bridge to add live draft picks.');return;}
     if (!/^\d+$/.test(espnLeagueId.trim())) { setNotice('Enter the numeric ESPN League ID.'); return; }
     setEspnSyncing(true); setNotice('Connecting to ESPN…');
     try {
@@ -560,7 +606,7 @@ export default function Home() {
             <span className="grid size-9 place-items-center rounded-md bg-[#d7ff45] text-[#0a1510]"><BrainCircuit className="size-5" /></span>
             <div><p className="font-semibold leading-tight">Fourth Down</p><p className="text-xs text-white/55">Dynasty draft room</p></div>
           </div>
-          <Select value={activeProfileId} onValueChange={(value) => switchLeagueProfile(value as string)}><SelectTrigger className="h-9 w-[190px] border-white/15 bg-white/8 text-white"><SelectValue /></SelectTrigger><SelectContent>{profiles.map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.name}</SelectItem>)}</SelectContent></Select>
+          <div className="flex flex-wrap gap-2"><Select value={draftMode} onValueChange={value=>switchDraftMode(value as DraftMode)}><SelectTrigger aria-label="Draft mode" className="h-9 w-[155px] border-white/15 bg-white/8 text-white"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="keeper">Keeper draft</SelectItem><SelectItem value="traditional">Traditional draft</SelectItem></SelectContent></Select>{draftMode==='traditional'?<Select value={activeProfileId} onValueChange={(value) => switchLeagueProfile(value as string)}><SelectTrigger aria-label="Traditional league" className="h-9 w-[190px] border-white/15 bg-white/8 text-white"><SelectValue /></SelectTrigger><SelectContent>{profiles.filter(p=>p.id!==KEEPER_PROFILE_ID).map((profile) => <SelectItem key={profile.id} value={profile.id}>{profile.name}</SelectItem>)}</SelectContent></Select>:<span className="self-center text-sm text-white/75">Discord League · preconfigured</span>}</div>
           <div className="hidden items-center gap-5 text-sm text-white/65 sm:flex">
             <span><b className="text-white">{teams.length}</b> teams</span><span className="capitalize"><b className="text-white">{draftMode}</b> draft</span><span><b className="text-white">{available.length}</b> available</span><span className={dataSource === 'demo' ? 'text-amber-300' : 'text-[#d7ff45]'}>{sourceLabel}</span>
           </div>
@@ -615,7 +661,7 @@ export default function Home() {
             <div className="relative"><Search className="absolute left-3 top-3 size-4 text-muted-foreground" /><Input id="player-search" className="h-10 pl-9" value={playerQuery} onChange={(event) => { setPlayerQuery(event.target.value); setSelectedPlayer(''); }} placeholder="Search available players…" /></div>
             {playerQuery && <div className="mt-1 max-h-60 overflow-auto rounded-lg border bg-popover p-1 shadow-lg">{filteredPlayers.length ? filteredPlayers.map((player) => <button key={player.id} className={`flex w-full items-center justify-between rounded-md px-3 py-2 text-left text-sm hover:bg-secondary ${selectedPlayer === player.id ? 'bg-secondary' : ''}`} onClick={() => { setSelectedPlayer(player.id); setPlayerQuery(player.name); }}><span><b>{player.name}</b><span className="ml-2 text-muted-foreground">{player.pos} · {player.team}</span></span>{selectedPlayer === player.id && <Check className="size-4" />}</button>) : <p className="p-3 text-sm text-muted-foreground">No available player found.</p>}</div>}
             <div className="mt-4 grid grid-cols-[1fr_auto] gap-2">
-              <Select value={selectedOwner} onValueChange={(value) => setSelectedOwner(value as string)}><SelectTrigger className="h-10 w-full"><SelectValue /></SelectTrigger><SelectContent>{teams.map((team) => <SelectItem key={team} value={team}>{team}{team === settings.userTeam ? ' (you)' : ''}</SelectItem>)}</SelectContent></Select>
+              <Select value={draftMode==='keeper'?currentOwner:selectedOwner} disabled={draftMode==='keeper'} onValueChange={(value) => setSelectedOwner(value as string)}><SelectTrigger className="h-10 w-full"><SelectValue /></SelectTrigger><SelectContent>{teams.map((team) => <SelectItem key={team} value={team}>{team}{team === settings.userTeam ? ' (you)' : ''}</SelectItem>)}</SelectContent></Select>
               <Button className="h-10 px-4" disabled={!selectedPlayer} onClick={addDraftPick}>Add pick <ChevronRight /></Button>
             </div>
             {notice && <p aria-live="polite" className="mt-3 text-sm text-muted-foreground">{notice}</p>}
@@ -626,25 +672,18 @@ export default function Home() {
             <Tabs defaultValue="setup">
               <TabsList className="grid w-full grid-cols-3"><TabsTrigger value="keepers">Keepers</TabsTrigger><TabsTrigger value="setup">Setup</TabsTrigger><TabsTrigger value="data">Data</TabsTrigger></TabsList>
               <TabsContent value="keepers" className="pt-4">
-                {draftMode === 'traditional' && <div className="mb-3 rounded-lg border bg-secondary/50 p-3 text-sm"><b>Traditional mode is active.</b><p className="mt-1 text-muted-foreground">Keepers are retained in this profile but do not remove players or reserve picks. Switch this profile to Keeper mode in Setup to activate them.</p></div>}
-                <div className="mb-3 rounded-lg border border-[#10271b]/15 bg-[#10271b]/5 p-3">
-                  <div className="flex items-start justify-between gap-3"><div><p className="text-sm font-semibold">Draft-day resync planned</p><p className="mt-1 text-xs leading-relaxed text-muted-foreground">About 15 minutes before the draft, resync ESPN in FantasyPros. Then ask me to read its Keepers/Draft Picks page and sync Fourth Down.</p></div><Badge variant="outline">{keepers.length ? `${pricedKeepers}/${keepers.length} priced` : 'Waiting'}</Badge></div>
-                  <a className="mt-2 inline-flex items-center gap-1 text-xs font-semibold underline underline-offset-2" href="https://www.fantasypros.com/nfl/myleagues/settings/" target="_blank" rel="noreferrer">Open FantasyPros league setup <ExternalLink className="size-3" /></a>
-                </div>
-                <p className="mb-3 text-sm text-muted-foreground"><b>Fallback:</b> enter only <code>Team | Player</code>. Those keepers load immediately and stay marked “Cost pending.” If needed, add <code>| original round | years kept</code> later; this year’s cost is calculated automatically.</p>
-                <Textarea className="min-h-32 resize-y" value={keepersText} onChange={(event) => setKeepersText(event.target.value)} placeholder={'Super Smash Burrows | Nico Collins | 5 | 2\nTeam Name | Player Name | 9 | 1'} />
-                <Button className="mt-3 w-full" variant="secondary" onClick={importKeepers}>Load keepers ({keepers.length}/36)</Button>
-                {keepers.length > 0 && <div className="mt-3 space-y-1 rounded-lg border bg-secondary/40 p-2.5">{keepers.map((keeper) => <div key={`${keeper.owner}-${keeper.playerId}`} className="flex items-center justify-between gap-3 text-xs"><span className="truncate"><b>{keeper.playerName ?? players.find((player) => player.id === keeper.playerId)?.name}</b> · {keeper.owner}</span><Badge variant="outline">{keeper.costRound ? `Costs R${keeper.costRound}` : 'Cost pending'}</Badge></div>)}</div>}
-                <p className="mt-2 text-xs text-muted-foreground">Keeper-cost selections are automatically skipped on the live draft clock. If two keepers collide in one round, the later entry moves to the nearest earlier round.</p>
+                {draftMode==='keeper'?<ConfirmedKeepers/>:<div className="space-y-3 text-sm"><p>Traditional drafts have no keepers. Your preconfigured Discord keeper draft is saved separately.</p><Button variant="secondary" onClick={()=>switchDraftMode('keeper')}>Open my keeper draft</Button></div>}
               </TabsContent>
               <TabsContent value="setup" className="space-y-4 pt-4">
-                <Field label="Draft format"><Select value={draftMode} onValueChange={(value) => {setDraftMode(value as DraftMode);setSettings(s=>({...s,rulesConfirmed:false}));}}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="traditional">Traditional draft</SelectItem><SelectItem value="keeper">Keeper draft</SelectItem></SelectContent></Select></Field>
+                <Field label="Draft format"><Select value={draftMode} onValueChange={(value) => switchDraftMode(value as DraftMode)}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="traditional">Traditional draft</SelectItem><SelectItem value="keeper">Keeper draft</SelectItem></SelectContent></Select></Field>
+                {draftMode==='keeper'?<KeeperSetup settings={settings}/>:<>
                 <div><p className="mb-1.5 text-sm font-medium">Add another league</p><div className="grid grid-cols-[1fr_auto] gap-2"><Input value={newProfileName} onChange={(event) => setNewProfileName(event.target.value)} placeholder="Mock Draft League" /><Button variant="secondary" onClick={createLeagueProfile} disabled={!newProfileName.trim()}>Create</Button></div><p className="mt-1.5 text-xs text-muted-foreground">Every league keeps its own settings, keepers, picks, and sync state.</p></div>
                 <Field label="My team"><Select value={settings.userTeam} onValueChange={(value) => { const team = value as string; setSettings({ ...settings, userTeam: team, draftSlot: teams.indexOf(team) + 1 }); }}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{teams.map((team) => <SelectItem key={team} value={team}>{team}</SelectItem>)}</SelectContent></Select></Field>
                 <Field label="Draft slot"><Select value={String(settings.draftSlot)} onValueChange={(value) => setSettings({ ...settings, draftSlot: Number(value), userTeam: teams[Number(value) - 1] ?? settings.userTeam })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent>{teams.map((_, index) => <SelectItem key={index + 1} value={String(index + 1)}>Slot {index + 1}</SelectItem>)}</SelectContent></Select></Field>
                 <Field label="Team direction"><Select value={settings.mode} onValueChange={(value) => setSettings({ ...settings, mode: value as LeagueSettings['mode'] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="contend">Contend now</SelectItem><SelectItem value="balanced">Balanced</SelectItem><SelectItem value="rebuild">Rebuild / youth</SelectItem></SelectContent></Select></Field>
                 <Field label="Scoring"><Select value={settings.scoring} onValueChange={(value) => setSettings({ ...settings, rulesConfirmed:false, scoring: value as LeagueSettings['scoring'] })}><SelectTrigger className="w-full"><SelectValue /></SelectTrigger><SelectContent><SelectItem value="ppr">PPR</SelectItem><SelectItem value="half-ppr">Half PPR</SelectItem><SelectItem value="standard">Standard</SelectItem></SelectContent></Select></Field>
-                <EngineSettings settings={settings} onChange={setSettings} keeper={draftMode==='keeper'}/>
+                <EngineSettings settings={settings} onChange={setSettings} keeper={false}/>
+                </>}
               </TabsContent>
               <TabsContent value="data" className="pt-4">
                 <div className="mb-4 rounded-xl border border-[#d7ff45]/50 bg-[#10271b] p-3 text-white">
@@ -664,9 +703,11 @@ export default function Home() {
                   <p className="mb-2 text-xs leading-relaxed text-muted-foreground">A connected assistant can send teams, settings, rosters, keepers, and picks from an ESPN league or mock draft into the active profile. Mock-board sync replaces only that profile’s picks.</p>
                   <a className="mb-3 inline-flex items-center gap-1 text-xs font-semibold underline underline-offset-2" href="https://support.fantasypros.com/hc/en-us/articles/55212611981851-How-do-I-connect-to-the-FantasyPros-MCP-Server" target="_blank" rel="noreferrer">Open official connection guide <ExternalLink className="size-3" /></a>
                   {leagueSource === 'fantasypros-mcp' && <div className="mb-3 rounded-md bg-emerald-50 px-2.5 py-2 text-xs text-emerald-900"><b>{espnLeagueName || 'FantasyPros league'}</b> · {teams.length} teams · {keepers.length} keepers{leagueSnapshotUpdatedAt ? ` · Updated ${new Date(leagueSnapshotUpdatedAt).toLocaleString()}` : ''}</div>}
-                  {leagueRosters.length>0&&<div className="mb-3 space-y-2 text-sm"><p>Are these synced rosters from the current draft? Previous-season rosters must not remove players from this year's pool.</p><Select value={rostersAreCurrentDraft?'current':'unconfirmed'} onValueChange={v=>setRostersAreCurrentDraft(v==='current')}><SelectTrigger className="w-full"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="unconfirmed">Unconfirmed / prior-season roster</SelectItem><SelectItem value="current">Confirmed current draft rosters</SelectItem></SelectContent></Select></div>}
+                  {draftMode==='traditional'&&<>{leagueRosters.length>0&&<div className="mb-3 space-y-2 text-sm"><p>Are these synced rosters from the current draft? Previous-season rosters must not remove players from this year's pool.</p><Select value={rostersAreCurrentDraft?'current':'unconfirmed'} onValueChange={v=>setRostersAreCurrentDraft(v==='current')}><SelectTrigger className="w-full"><SelectValue/></SelectTrigger><SelectContent><SelectItem value="unconfirmed">Unconfirmed / prior-season roster</SelectItem><SelectItem value="current">Confirmed current draft rosters</SelectItem></SelectContent></Select></div>}
                   <Textarea className="min-h-24 resize-y font-mono text-xs" value={leagueSnapshotText} onChange={(event) => setLeagueSnapshotText(event.target.value)} placeholder={'Optional fallback: paste a JSON league snapshot\n{"teams":["Team 1","Team 2"],"myTeam":"Team 1","keepers":[]}'} />
                   <Button className="mt-2 w-full" variant="secondary" onClick={importLeagueSnapshot} disabled={!leagueSnapshotText.trim()}><Upload /> Load league snapshot</Button>
+                  </>}
+                  {draftMode==='keeper'&&<p className="my-3 text-sm">Your keepers, draft order and roster slots are already set. Future league syncs can add live picks without replacing this setup.</p>}
                   <p className="mt-2 text-xs leading-relaxed text-muted-foreground">Fourth Down stores the snapshot only in this browser. It never receives your ESPN username, password, cookies, or FantasyPros OAuth tokens.</p>
                 </div>
               </TabsContent>

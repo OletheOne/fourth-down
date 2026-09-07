@@ -3,8 +3,10 @@ import {loadModule} from './load-module.mjs';
 const {evaluatePlayer,normalizeSettings,rosterOutcomeValue,analyzeDraft}=await loadModule('../lib/optimizer.ts');
 const {applyDiscordRules}=await loadModule('../lib/discord-rules.ts');
 const input={userTeam:'Super Smash Burrows',draftSlot:8,scoring:'ppr',mode:'balanced',starters:{QB:1,RB:2,WR:2,TE:1,FLEX:2,K:1,DST:1},keeperRules:{limit:3,escalation:1,horizon:3,discount:.65,firstRound:'ineligible',collision:'reject'}};
-const s=normalizeSettings(applyDiscordRules(input));
-assert.equal(s.draftSlot,8);assert.deepEqual(s.keeperRules,input.keeperRules);assert.equal(s.starters.WR,3);assert.equal(s.starters.FLEX,0);assert.equal(s.customScoring.pass_ints,-2);assert.equal(s.customScoring.def_sack,2);
+const discord=normalizeSettings(applyDiscordRules(input));
+assert.equal(discord.draftSlot,8);assert.deepEqual(discord.keeperRules,input.keeperRules);assert.equal(discord.starters.WR,2);assert.equal(discord.starters.FLEX,2);assert.equal(discord.starters.K,0);assert.equal(discord.irSlots,1);assert.equal(discord.positionLimits.K,0);assert.equal(discord.customScoring.pass_ints,-2);assert.equal(discord.customScoring.def_sack,2);
+// Generic kicker-band support remains available to traditional leagues, not Discord.
+const s={...discord,bonusRules:{...discord.bonusRules,fieldGoals:[3,4,5]}};
 const player=(pos,stats,points)=>({id:pos,name:pos,pos,team:'HOU',stats,pointsByScoring:{standard:points,ppr:points},projectedPoints:points,projectionScoring:'standard',season:2026,adp:100,age:25,dynastyRank:999,tier:1,bye:7,hasProjection:true});
 const k=player('K',{fg:30,xpt:40},130);const d=player('DST',{def_sack:40,def_int:10,def_fr:10,def_safety:1,def_td:3},100);
 const ek=evaluatePlayer(k,s),ed=evaluatePlayer(d,s);
