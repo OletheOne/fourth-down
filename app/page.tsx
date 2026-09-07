@@ -13,7 +13,9 @@ import { demoPlayers, type DraftedPlayer, type LeagueSettings, parsePlayerCsv, t
 import { normalizeSettings, type DraftAnalysis, nameKey, keeperCost, resolveKeeperContracts } from '@/lib/optimizer';
 import { EngineSettings, PlayerRiskEditor } from '@/components/engine-settings';
 import { prepareProfileState, validateKeeperSnapshot, KEEPER_PROFILE_ID, TRADITIONAL_PROFILE_ID, KEEPER_PRESET_REVISION, presetKeepers, presetPlayers, findKeeperPlayer, mergeKeeperPicks, identity } from '@/lib/keeper-preset';
-import DraftWorker from '../lib/draft.worker?worker';
+import DraftWorker from '../lib/draft.worker?worker&inline';
+import {startAnalysis} from '@/lib/analysis-runner';
+import {requestSiteJson,SiteRequestError} from '@/lib/client-json';
 import {KeeperSetup,ConfirmedKeepers} from '@/components/keeper-preset';
 
 const defaultSettings: LeagueSettings = {
@@ -64,6 +66,7 @@ export default function Home() {
   const [dataSource, setDataSource] = useState<DataSource>('demo');
   const [lastFantasyProsSync, setLastFantasyProsSync] = useState('');
   const [fantasyProsSyncing, setFantasyProsSyncing] = useState(false);
+  const [refreshNeedsSignIn,setRefreshNeedsSignIn]=useState(false);
   const [selectedPlayer, setSelectedPlayer] = useState('');
   const [selectedOwner, setSelectedOwner] = useState('Team 1');
   const [playerQuery, setPlayerQuery] = useState('');
@@ -138,13 +141,7 @@ export default function Home() {
   useEffect(() => {
     if (!hydrated) return;
     setAnalyzing(true); setAnalysis(null); setAnalysisError('');
-    let worker: Worker;
-    try { worker = new DraftWorker(); }
-    catch { setAnalyzing(false); setAnalysisError('The recommendation worker could not start. Refresh the page; your saved picks are retained.'); return; }
-    worker.onmessage = event => { setAnalyzing(false); if (event.data.error) setAnalysisError(event.data.error); else setAnalysis(event.data.analysis); };
-    worker.onerror = () => { setAnalyzing(false); setAnalysisError('Analysis could not run. Refresh the page; your saved picks are retained.'); };
-    worker.postMessage({players, drafted, settings, teams, context:{draftMode,season:espnSeason,dataSource,lastSync:lastFantasyProsSync,warnings:dataWarnings,rosters:leagueRosters,rostersAreCurrentDraft}});
-    return () => worker.terminate();
+    return startAnalysis({players,drafted,settings,teams,context:{draftMode,season:espnSeason,dataSource,lastSync:lastFantasyProsSync,warnings:dataWarnings,rosters:leagueRosters,rostersAreCurrentDraft}},()=>new DraftWorker(),result=>{setAnalyzing(false);setAnalysis(result);},error=>{setAnalyzing(false);setAnalysisError(error);});
   }, [hydrated, players, drafted, settings, teams, draftMode, espnSeason, dataSource, lastFantasyProsSync, dataWarnings,leagueRosters,rostersAreCurrentDraft]);
   const recommendations = analysis?.recommendations ?? [];
   const best = recommendations[0];
@@ -318,7 +315,7 @@ export default function Home() {
   function loadSavedState(input: SavedState,profileId=activeProfileId) {
     const base={...input,players:input.players?.length?input.players:demoPlayers,drafted:input.drafted??[],settings:input.settings??defaultSettings};
     const saved=prepareProfileState(base,profileId);
-    setFantasyProsSyncing(false);setAnalysis(null);setAnalyzing(false);setAnalysisError('');
+    setFantasyProsSyncing(false);setRefreshNeedsSignIn(false);setAnalysis(null);setAnalyzing(false);setAnalysisError('');
     setPlayers(saved.players?.length ? saved.players : demoPlayers);
     setDrafted(saved.drafted ?? []);
     setSettings(normalizeSettings(saved.settings ?? defaultSettings)); setDataWarnings(saved.dataWarnings ?? []);setRostersAreCurrentDraft(saved.rostersAreCurrentDraft??false);
@@ -508,18 +505,10 @@ export default function Home() {
     if (!silent) setNotice('Refreshing FantasyPros rankings, projections, ADP, and injuries…');
     const scoring = settings.scoring === 'half-ppr' ? 'HALF' : settings.scoring === 'ppr' ? 'PPR' : 'STD';
     try {
-      const response = await fetch(`/api/fantasypros?season=${espnSeason}&scoring=${scoring}`, { cache: 'no-store' });
-      const data = await response.json() as { code?: string; error?: string; players?: Player[]; updatedAt?: string; warnings?: string[] };
+      const data = await requestSiteJson<{players?:Player[];updatedAt?:string;warnings?:string[]}>(`/api/fantasypros?season=${espnSeason}&scoring=${scoring}`);
       if(generation!==syncGeneration.current)return;
-      if (!response.ok || data.error) {
-        if (data.code === 'sample_access') {
-          if (players.length < 100) { setPlayers(demoPlayers); setDataSource('demo'); setLastFantasyProsSync(''); }
-          setNotice(data.error ?? 'This key only has FantasyPros sample access.');
-          return;
-        }
-        throw new Error(data.error ?? 'FantasyPros refresh failed.');
-      }
-      if (!data.players?.length) throw new Error('FantasyPros returned no draftable players.');
+      if (!Array.isArray(data.players)||!data.players.length) throw new Error('FantasyPros returned no draftable players. Your saved draft is unchanged.');
+      setRefreshNeedsSignIn(false);
 
       const oldPlayers = new Map(players.map((player) => [player.id, player]));
       const nextByName = new Map(data.players.map((player) => [nameKey(player.name), player]));
@@ -534,7 +523,7 @@ export default function Home() {
       setLastFantasyProsSync(data.updatedAt ?? new Date().toISOString());
       setNotice(`FantasyPros loaded ${data.players.length} players.${data.warnings?.length ? ` ${data.warnings.join(' ')}` : ''}`);
     } catch (error) {
-      if(generation===syncGeneration.current){const message=error instanceof Error?error.message:'Could not refresh FantasyPros.';setNotice(message);setDataWarnings([`Refresh failed: ${message} Saved data retained.`]);}
+      if(generation===syncGeneration.current){const message=error instanceof Error?error.message:'Could not refresh FantasyPros.';setRefreshNeedsSignIn(error instanceof SiteRequestError&&error.needsSignIn);setNotice(message);setDataWarnings([`Refresh failed: ${message} Saved data retained.`]);}
     } finally {
       if(generation===syncGeneration.current)setFantasyProsSyncing(false);
     }
@@ -665,6 +654,7 @@ export default function Home() {
               <Button className="h-10 px-4" disabled={!selectedPlayer} onClick={addDraftPick}>Add pick <ChevronRight /></Button>
             </div>
             {notice && <p aria-live="polite" className="mt-3 text-sm text-muted-foreground">{notice}</p>}
+            {refreshNeedsSignIn&&<a className="mt-3 block text-sm font-semibold underline" href="/signin-with-chatgpt?return_to=%2F" target="_top">Reconnect Fourth Down</a>}
             {draftPicks.length > 0 && <Button variant="ghost" className="mt-3 w-full" onClick={() => setDrafted((entries) => entries.filter((entry) => entry !== draftPicks[draftPicks.length - 1]))}><RotateCcw /> Undo last draft pick</Button>}
           </div>
 
@@ -695,6 +685,7 @@ export default function Home() {
                   <Button className="w-full bg-[#d7ff45] text-[#10271b] hover:bg-[#c8ef3e]" onClick={() => void syncFantasyPros()} disabled={fantasyProsSyncing}>
                     <RefreshCw className={fantasyProsSyncing ? 'animate-spin' : ''} /> {fantasyProsSyncing ? 'Refreshing…' : dataSource === 'fantasypros' ? 'Refresh FantasyPros' : 'Load FantasyPros data'}
                   </Button>
+                  {refreshNeedsSignIn&&<p className="mt-3 text-sm text-amber-100">Your private-site session needs renewal. <a className="font-semibold underline" href="/signin-with-chatgpt?return_to=%2F" target="_top">Reconnect Fourth Down</a>. This is not a FantasyPros subscription or API-key error.</p>}
                   {dataSource !== 'fantasypros' && <p className="mt-2 rounded-md bg-amber-300/10 px-2 py-1.5 text-xs text-amber-100">Free keys return sample data. The full draft pool requires <a className="font-semibold underline underline-offset-2" href="https://www.fantasypros.com/premium/" target="_blank" rel="noreferrer">FantasyPros HOF production access</a>.</p>}
                   <p className="mt-2 text-center text-xs text-white/45">Data provided by <a className="underline underline-offset-2 hover:text-white" href="https://www.fantasypros.com/api-data/" target="_blank" rel="noreferrer">FantasyPros</a> · personal use only</p>
                 </div>

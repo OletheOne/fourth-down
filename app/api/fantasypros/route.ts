@@ -67,7 +67,9 @@ async function fantasyProsFetch(path: string, apiKey: string) {
   if (!response.ok) {
     throw new Error(`FantasyPros returned HTTP ${response.status} for ${path.split('?')[0]}.`);
   }
-  return response.json() as Promise<unknown>;
+  if(!/\bapplication\/(?:[\w.-]+\+)?json\b/i.test(response.headers.get('content-type')??''))throw new Error(`FantasyPros returned a non-JSON response for ${path.split('?')[0]}. Please try refreshing again.`);
+  try{return await response.json() as unknown;}
+  catch{throw new Error(`FantasyPros returned incomplete JSON for ${path.split('?')[0]}. Please try refreshing again.`);}
 }
 
 export async function GET(request: Request) {
