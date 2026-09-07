@@ -61,8 +61,17 @@ export function evaluatePlayer(p: Player, s: LeagueSettings, context: DraftConte
     for (const [stat, weight] of Object.entries(scoringOverrides)) {
       const kind = stat.startsWith('def_') ? 'DST' : /^(fg|xpt|fga)/.test(stat) ? 'K' : 'offense';
       if (kind==='offense' && (p.pos==='K'||p.pos==='DST') || kind!=='offense' && p.pos!==kind) continue;
+      // Position-shaped feeds omit entire categories a player is not projected
+      // to perform. Do not demand passing interceptions from every RB/WR/TE.
+      // A supplied passing field (even zero) or explicit position override makes
+      // that category relevant, so genuine unusual-role gaps remain visible.
+      const hasCategory=(prefix:string)=>Object.keys(p.stats??{}).some(key=>key.startsWith(prefix));
+      const explicit=Object.prototype.hasOwnProperty.call(s.positionScoring?.[p.pos]??{},stat);
+      if(!explicit&&stat.startsWith('pass_')&&p.pos!=='QB'&&!hasCategory('pass_'))continue;
+      if(!explicit&&/^rec(?:_|$)/.test(stat)&&p.pos==='QB'&&!hasCategory('rec'))continue;
+      if(!explicit&&stat.startsWith('rush_')&&p.pos==='TE'&&!hasCategory('rush_'))continue;
       if (!Number.isFinite(weight)) { issues.push(`Invalid scoring coefficient: ${stat}`); continue; }
-      if (p.stats?.[stat] !== undefined) { points += p.stats[stat] * (weight - (base[stat] ?? 0)); if (weight !== (base[stat]??0) && p.stats[stat]===0 && /yds_\d|def_pa_|scrimage/.test(stat)) issues.push(`Unverified zero projection for bonus ${stat}; exact scoring cannot be established`); }
+      if (Number.isFinite(p.stats?.[stat])) { points += p.stats![stat] * (weight - (base[stat] ?? 0)); if (weight !== (base[stat]??0) && p.stats![stat]===0 && /yds_\d|def_pa_|scrimage/.test(stat)) issues.push(`Unverified zero projection for bonus ${stat}; exact scoring cannot be established`); }
       else if (weight !== (base[stat] ?? 0)) issues.push(`Missing ${stat} projection; custom scoring incomplete`);
     }
   }
