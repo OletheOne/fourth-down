@@ -52,8 +52,9 @@ function timestamp(value: unknown) {
 
 function projectionPoints(player: JsonRecord, scoring: string) {
   const stats = player.stats && typeof player.stats === 'object' ? player.stats as JsonRecord : player;
-  if (scoring === 'PPR') return numberValue(stats.points_ppr ?? stats.fantasy_points_ppr ?? (stats.rec!=null&&stats.points!=null?Number(stats.points)+Number(stats.rec):undefined), 0);
-  if (scoring === 'HALF') return numberValue(stats.points_half ?? stats.fantasy_points_half ?? (stats.rec!=null&&stats.points!=null?Number(stats.points)+Number(stats.rec)*.5:undefined), 0);
+  const receptions=stats.rec??stats.rec_rec;
+  if (scoring === 'PPR') return numberValue(stats.points_ppr ?? stats.fantasy_points_ppr ?? (receptions!=null&&stats.points!=null?Number(stats.points)+Number(receptions):undefined), 0);
+  if (scoring === 'HALF') return numberValue(stats.points_half ?? stats.fantasy_points_half ?? (receptions!=null&&stats.points!=null?Number(stats.points)+Number(receptions)*.5:undefined), 0);
   return numberValue(stats.points ?? stats.fantasy_points ?? stats.points_std, 0);
 }
 
@@ -128,6 +129,9 @@ export async function GET(request: Request) {
     const averageDraftPosition = numberValue(adp.rank_adp ?? adp.rank_ave ?? adp.rank_ecr ?? redraft.rank_adp, 999);
     const tier = numberValue(redraft.tier, Math.max(1, Math.ceil(consensusRank / 12)));
     const stats = Object.fromEntries(Object.entries(projection.stats && typeof projection.stats === 'object' ? projection.stats : {}).filter(([,v]) => v !== null && v !== '' && Number.isFinite(Number(v))).map(([k,v]) => [k, Number(v)]));
+    // Public API uses rec_rec for receptions and fumbles for the FL projection column.
+    if(stats.rec===undefined&&stats.rec_rec!==undefined)stats.rec=stats.rec_rec;
+    if(stats.fumbles_lost===undefined&&stats.fumbles!==undefined)stats.fumbles_lost=stats.fumbles;
     const fetchedAt = new Date().toISOString();
     const projectionMeta = projectionResult.status === 'fulfilled' ? projectionResult.value as JsonRecord : {};
     return {

@@ -27,7 +27,9 @@ export function resolveKeeperContracts(entries: DraftedPlayer[], s: LeagueSettin
   });
 }
 export const STAT_LABELS: Record<string, string> = { pass_yds: 'Passing yards', pass_tds: 'Passing TDs', pass_ints: 'Interceptions', rush_yds: 'Rushing yards', rush_tds: 'Rushing TDs', rec: 'Receptions', rec_yds: 'Receiving yards', rec_tds: 'Receiving TDs', fumbles_lost: 'Fumbles lost' };
-export const STANDARD_SCORING: Record<string, number> = { pass_yds: .04, pass_tds: 4, pass_ints: -2, rush_yds: .1, rush_tds: 6, rec: 0, rec_yds: .1, rec_tds: 6, fumbles_lost: -2, fg:3, xpt:1, def_sack:1, def_int:2, def_fr:2, def_safety:2, def_td:6, def_retd:6 };
+// FantasyPros' baseline, NOT an assumption about the user's ESPN scoring.
+// https://www.fantasypros.com/scoring-settings/ (INT = -1, FL = -2).
+export const STANDARD_SCORING: Record<string, number> = { pass_yds: .04, pass_tds: 4, pass_ints: -1, rush_yds: .1, rush_tds: 6, rec: 0, rec_yds: .1, rec_tds: 6, fumbles_lost: -2, '2pt_tds':2, ret_tds:6, fg:3, xpt:1, def_sack:1, def_int:2, def_fr:2, def_safety:2, def_td:6, def_retd:6 };
 export type DraftContext = { draftMode?: 'traditional' | 'keeper'; now?: number; seed?: number; season?: number; dataSource?: string; lastSync?: string; warnings?: string[]; rosters?: Array<{team:string;players:string[]}>; rostersAreCurrentDraft?: boolean };
 export type EvaluatedPlayer = Player & { value: number; uncertainty: number; issues: string[] };
 export type DraftRecommendation = Recommendation & { projectedValue: number; marginalPoints: number; replacementPoints: number; keeperValue: number; nextKeeperRound?: number; survival: number; nextOption?: string; nextPick?: number; plan: string[]; confidence: 'low' | 'medium' | 'high'; issues: string[]; spread: number; evaluated: boolean; baseline?: boolean; conservativeEdge?: number };

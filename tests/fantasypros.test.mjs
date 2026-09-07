@@ -19,7 +19,7 @@ if (process.argv.includes('--live')) {
   assert.ok(data.players.filter(p => p.consensusRank > 0 && p.consensusRank < 999).length >= 100);
 } else {
   process.env.FANTASYPROS_API_KEY = 'test-only-key';
-  const rows = Array.from({ length: 150 }, (_, i) => ({ player_id: i + 1, player_name: `Player ${i}`, position_id: 'WR', team_id: 'BUF', rank_ecr: i + 1, rank_ave:i+1.5,rank_std:3,rank_min:1,rank_max:9,player_bye_week:7, stats: { points:100,points_half:150,points_ppr: 200,rec:100 } }));
+  const rows = Array.from({ length: 150 }, (_, i) => ({ player_id: i + 1, player_name: `Player ${i}`, position_id: 'WR', team_id: 'BUF', rank_ecr: i + 1, rank_ave:i+1.5,rank_std:3,rank_min:1,rank_max:9,player_bye_week:7, stats: { points:100,points_half:150,points_ppr: 200,rec_rec:100,fumbles:2 } }));
   let failRankings = false;
   let smallPool = false;
   let failNews = false;
@@ -39,6 +39,7 @@ if (process.argv.includes('--live')) {
   const successData=await success.json();const first=successData.players[0];
   assert.equal(first.projectedPoints, 200);
   assert.equal(first.adp,1.5);assert.equal(first.adpSource,'average');assert.equal(first.rankStdDev,3);assert.equal(first.bye,7);assert.equal(first.injuryStatus,'IR');assert.equal(first.newsHeadline,'Newest');assert.equal(first.newsUpdatedAt,'2026-09-06T12:00:00.000Z');assert.deepEqual(first.pointsByScoring,{standard:100,'half-ppr':150,ppr:200});assert.equal(first.stats.rec,100);assert.equal(first.hasProjection,true);assert.equal(first.active,true);
+  assert.equal(first.stats.rec_rec,100);assert.equal(first.stats.fumbles_lost,2);
   failNews=true;const degraded=await GET(request());assert.equal(degraded.status,200);assert.match((await degraded.json()).warnings.join(' '),/News could not be refreshed/);failNews=false;
   failRankings = true;
   const failure = await GET(request());
