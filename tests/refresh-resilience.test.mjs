@@ -25,7 +25,11 @@ const scriptError=fake();scriptError.postMessage=()=>queueMicrotask(()=>scriptEr
 const messageError=fake();messageError.postMessage=()=>queueMicrotask(()=>messageError.onmessageerror({}));assert.deepEqual(await run(()=>messageError),failure);
 const invalidMessage=fake();invalidMessage.postMessage=()=>queueMicrotask(()=>invalidMessage.onmessage({data:{error:'failed'}}));assert.deepEqual(await run(()=>invalidMessage),failure);
 const working=fake();working.postMessage=()=>queueMicrotask(()=>working.onmessage({data:{analysis:failure}}));assert.deepEqual(await run(()=>working),failure);
+let earlyCount=0,finalCount=0;const progressive=fake();
+await new Promise((resolve,reject)=>{startAnalysis(input,()=>progressive,()=>{finalCount++;resolve();},reject,()=>earlyCount++);progressive.onmessage({data:{pickReady:{player:{id:'ready'}}}});assert.equal(earlyCount,1);assert.equal(finalCount,0);progressive.onmessage({data:{analysis:failure}});});
+assert.equal(finalCount,1,'A ready-pick message must not terminate analysis or start fallback');
 let callbacks=0;const stale=fake();const cancel=startAnalysis(input,()=>stale,()=>callbacks++,()=>callbacks++);cancel();stale.onmessage({data:{analysis:failure}});stale.onerror({});
+let staleReady=0;const staleProgress=fake();const cancelProgress=startAnalysis(input,()=>staleProgress,()=>callbacks++,()=>callbacks++,()=>staleReady++);cancelProgress();staleProgress.onmessage({data:{pickReady:{player:{id:'old'}}}});assert.equal(staleReady,0);
 const cancelFallback=startAnalysis(input,()=>{throw Error('blocked');},()=>callbacks++,()=>callbacks++);cancelFallback();
 await new Promise(resolve=>setTimeout(resolve,20));assert.equal(callbacks,0,'Cancelled/profile-switched work cannot replace the current analysis');assert.deepEqual(input,before,'Failures cannot mutate saved picks or players');
 console.log('PASS: JSON success, sign-in HTML, server HTML, malformed JSON, network failure, worker startup/script/message failures, bundled fallback and cancellation.');
